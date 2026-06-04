@@ -22,6 +22,8 @@ LidBridge is an open-source **desktop application** that helps developers clean 
 
 No more manually deleting `node_modules`, `__pycache__`, `.next`, or `target` folders before sharing your code. LidBridge handles all of that automatically, detects secret files before they leak, and pushes your clean project to a new GitHub repository.
 
+Ideal for developers preparing projects for AI code review with ChatGPT, Claude, or Gemini — clean once, push instantly, no terminal required.
+
 ---
 
 ## ✨ Features
@@ -235,7 +237,7 @@ under the conditions of the GNU GPL v3.
 | 🧪 Labs | [lidprex-labs.onrender.com](https://lidprex-labs.onrender.com) |
 | 👤 Lead Developer | [github.com/bxat01](https://github.com/bxat01) |
 | 🏢 Organization | [github.com/lidprex](https://github.com/lidprex) |
-
+| 📦 RepoPrep | [repoprep.onrender.com](https://repoprep.onrender.com) |
 ---
 
 <div align="center">
