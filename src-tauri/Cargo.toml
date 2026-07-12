@@ -46,7 +46,9 @@ regex = "1.10"
 strip = true
 lto = true
 codegen-units = 1
-panic = "abort"
+# NOTE: intentionally NOT using panic = "abort". With unwinding, a panic inside a
+# Tauri command is caught and surfaced to the UI as an error instead of killing
+# the whole application.
 
 [package.metadata.windows]
 subsystem = "windows"
