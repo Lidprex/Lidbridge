@@ -10,8 +10,6 @@ use walkdir::WalkDir;
 use rayon::prelude::*;
 use tauri::{AppHandle, Emitter};
 use serde::{Deserialize, Serialize};
-use reqwest::Client;
-use serde_json::json;
 use regex::Regex;
 
 /// Progress event sent to the frontend during cleaning operations.
@@ -387,7 +385,11 @@ fn send_progress(
 }
 
 /// Copies clean files from `source_dir` to `output_dir`, skipping junk directories and files.
-pub async fn start_cleaning(
+///
+/// This is CPU/IO-bound (walkdir + rayon + fs) and contains no async work, so it is a
+/// synchronous function. Callers on an async runtime should run it via
+/// `tokio::task::spawn_blocking` to avoid blocking the runtime / UI thread.
+pub fn start_cleaning(
     source_dir: &str,
     output_dir: &str,
     options: CleanOptions,

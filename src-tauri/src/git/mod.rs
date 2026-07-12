@@ -146,7 +146,10 @@ impl GitPusher {
 
         match repo.head() {
             Ok(head) => {
-                let parent = repo.find_commit(head.target().unwrap()).unwrap();
+                let target = head.target()
+                    .ok_or("HEAD has no target commit")?;
+                let parent = repo.find_commit(target)
+                    .map_err(|e| format!("Failed to find parent commit: {}", e))?;
                 repo.commit(Some("HEAD"), &signature, &signature, commit_msg, &tree, &[&parent])
                     .map_err(|e| format!("Failed to create commit: {}", e))?;
             },

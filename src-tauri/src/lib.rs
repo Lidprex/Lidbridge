@@ -176,8 +176,8 @@ async fn start_oauth_server(app_handle: tauri::AppHandle, port: u16) -> Result<(
 // ========== TAURI COMMANDS ==========
 
 #[tauri::command]
-fn get_session(state: tauri::State<AppState>) -> Result<Option<User>, String> {
-    let db = state.db.blocking_lock();
+async fn get_session(state: tauri::State<'_, AppState>) -> Result<Option<User>, String> {
+    let db = state.db.lock().await;
     match db.get_user_info() {
         Ok(Some((github_id, email, name, avatar_url))) => {
             Ok(Some(User {
@@ -194,8 +194,8 @@ fn get_session(state: tauri::State<AppState>) -> Result<Option<User>, String> {
 }
 
 #[tauri::command]
-fn get_repo_history(state: tauri::State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let db = state.db.blocking_lock();
+async fn get_repo_history(state: tauri::State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let db = state.db.lock().await;
     let history = db.get_repo_history()?;
 
     let repos = history.into_iter().map(|(repo_name, repo_url, owner_type, owner_name, created_at)| {
@@ -212,23 +212,25 @@ fn get_repo_history(state: tauri::State<'_, AppState>) -> Result<Vec<serde_json:
 }
 
 #[tauri::command]
-fn start_oauth(app_handle: tauri::AppHandle, state: tauri::State<AppState>) -> Result<String, String> {
-    let auth = state.auth.blocking_lock();
-    let (auth_url, csrf_token) = auth.get_authorization_url();
+async fn start_oauth(app_handle: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let auth_url = {
+        let auth = state.auth.lock().await;
+        let (auth_url, csrf_token) = auth.get_authorization_url();
+        log::info!("OAuth started with CSRF token: {}", csrf_token);
+        auth_url
+    };
 
-    log::info!("OAuth started with CSRF token: {}", csrf_token);
-
+    // Run the callback server on the shared async runtime instead of spawning a
+    // std thread with its own nested tokio runtime.
     let app_handle_clone = app_handle.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            if let Err(e) = start_oauth_server(app_handle_clone, 2026).await {
-                log::error!("OAuth server error: {}", e);
-            }
-        });
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = start_oauth_server(app_handle_clone, 2026).await {
+            log::error!("OAuth server error: {}", e);
+        }
     });
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Give the callback server a moment to bind before opening the browser.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let _ = open::that(&auth_url);
 
     Ok(auth_url)
@@ -288,23 +290,23 @@ async fn complete_oauth(code: String, state: tauri::State<'_, AppState>) -> Resu
 }
 
 #[tauri::command]
-fn logout(state: tauri::State<AppState>) -> Result<(), String> {
-    let db = state.db.blocking_lock();
+async fn logout(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().await;
     db.clear_session()
 }
 
-#[allow(dead_code)]
 #[tauri::command]
 async fn save_github_token(token: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-
-    let (github_id, email, name, avatar_url) = rt.block_on(async {
+    let (github_id, email, name, avatar_url) = {
         let auth = state.auth.lock().await;
-        auth.get_github_user(&token).await
-    }).map_err(|e| format!("Invalid token: {}", e))?;
+        auth.get_github_user(&token)
+            .await
+            .map_err(|e| format!("Invalid token: {}", e))?
+    };
 
     let db = state.db.lock().await;
-    db.save_session_token(&token, &github_id, &email, &name, &avatar_url, "").map_err(|e| e.to_string())?;
+    db.save_session_token(&token, &github_id, &email, &name, &avatar_url, "")
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -341,16 +343,14 @@ pub struct CleanOptionsDto {
 }
 
 #[tauri::command]
-fn start_cleaning_command(
+async fn start_cleaning_command(
     source_dir: String,
     output_dir: String,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     options: CleanOptionsDto,
     app_handle: tauri::AppHandle,
 ) -> Result<cleaner::CleanResult, String> {
     let start_time = std::time::Instant::now();
-
-    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
 
     let mode = match options.mode.as_str() {
         "flatten" => cleaner::CleanMode::Flatten,
@@ -365,31 +365,30 @@ fn start_cleaning_command(
         create_readme: options.create_readme,
     };
 
-    let db = state.db.blocking_lock();
-    let user_info = db.get_user_info().ok().flatten();
+    let user_info = {
+        let db = state.db.lock().await;
+        db.get_user_info().ok().flatten()
+    };
 
-    let result = rt.block_on(async {
-        cleaner::start_cleaning(
-            &source_dir,
-            &output_dir,
-            clean_options,
-            Some(&app_handle),
-        ).await
-    })?;
+    // Cleaning is CPU/IO-bound; run it on a blocking thread so the UI never freezes.
+    let handle = app_handle.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        cleaner::start_cleaning(&source_dir, &output_dir, clean_options, Some(&handle))
+    })
+    .await
+    .map_err(|e| format!("Cleaning task failed: {}", e))??;
 
     let execution_time_ms = start_time.elapsed().as_millis() as i32;
     let junk_mb = result.total_size_bytes as f64 / (1024.0 * 1024.0);
 
     if let Some((github_id, email, name, avatar_url)) = user_info {
-        let central_guard = state.central_db.blocking_lock();
+        let central_guard = state.central_db.lock().await;
         if let Some(central_db) = central_guard.as_ref() {
-            let _ = rt.block_on(async {
-                let _ = central_db.upsert_user(&github_id, &name, &email, &avatar_url).await;
-                let _ = central_db.log_clean(&github_id, result.total_size_bytes, "clean_operation").await;
-                let _ = central_db.update_global_stats(
-                    0, junk_mb, execution_time_ms, 0.0, 0, 0, true, junk_mb
-                ).await;
-            });
+            let _ = central_db.upsert_user(&github_id, &name, &email, &avatar_url).await;
+            let _ = central_db.log_clean(&github_id, result.total_size_bytes, "clean_operation").await;
+            let _ = central_db.update_global_stats(
+                0, junk_mb, execution_time_ms, 0.0, 0, 0, true, junk_mb,
+            ).await;
         }
     }
 
@@ -563,6 +562,7 @@ pub fn run() {
             get_repo_history,
             start_oauth,
             complete_oauth,
+            save_github_token,
             logout,
             select_folder_dialog,
             start_cleaning_command,
