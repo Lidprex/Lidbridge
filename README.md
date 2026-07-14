@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://res.cloudinary.com/ddqedxovk/image/upload/v1777644756/zdmst5ng01o20lam01ou.png" width="120" height="120" style="border-radius:20px" />
+<img src="https://res.cloudinary.com/ddqedxovk/image/upload/v1784021168/nkatmpgrqbglxqdsuqrc.png" width="120" height="120" style="border-radius:20px" />
 
 # LidBridge
 
@@ -16,7 +16,7 @@
 
 ---
 
-## 📖 What is LidBridge?
+## What is LidBridge?
 
 LidBridge is an open-source **desktop application** that helps developers clean their local project directories and publish them to GitHub — with one click.
 
@@ -26,31 +26,54 @@ Ideal for developers preparing projects for AI code review with ChatGPT, Claude,
 
 ---
 
-## ✨ Features
+## What's New in v2.0.0
+
+Complete rewrite from the ground up. Here's what changed from [v1.0.0](https://github.com/Lidprex/Lidbridge-LidBridge-v1.0.0):
+
+| Area | v1.0.0 | v2.0.0 |
+|---|---|---|
+| **Push System** | Used `git2` (libgit2) — broken on Windows, never actually pushed | GitHub Contents API (base64 upload) — works on all platforms |
+| **Secret Detection** | Content patterns only (20 patterns) | Content patterns (20+) + filename detection (28 names + 10 extensions) |
+| **Secret Detection Limit** | 1MB max file scan | No size limit — scans everything |
+| **Repository Config** | 5 fields | 7 fields (added `license_template`, `repo_type`) |
+| **Languages** | 5 (EN, AR, FR, HI, ZH) | 6 (EN, AR, **RU**, FR, HI, ZH) |
+| **OAuth Credentials** | Hardcoded in source code | Read from `.env` file — never committed |
+| **Database** | PostgreSQL analytics active | Deprecated — will return in a future version |
+| **UI/UX** | Basic steps | RTL support, hover menus, security warnings, modern design |
+| **Security Warning** | None | Login screen warns users to download only from official sources |
+| **Build System** | Manual | GitHub Actions CI/CD (Windows, macOS Intel, macOS Apple Silicon, Linux) |
+| **Platform Support** | Windows only (partially) | Windows, macOS (Intel + Apple Silicon), Linux |
+
+---
+
+## Features
 
 | Feature | Description |
 |---|---|
-| 🧹 **Smart Cleaning** | Automatically removes 30+ types of junk directories and files |
-| 🔍 **Secret Detection** | Scans for exposed API keys, tokens, and passwords before pushing |
-| 🚀 **One-Click Push** | Creates a GitHub repository and pushes your code in one step |
-| 🏢 **Org Support** | Push to personal accounts or any GitHub Organization you belong to |
-| 📊 **Project Scan** | Displays file statistics before cleaning |
-| 🌍 **Multilingual UI** | Supports English, Arabic, French, Hindi, and Chinese |
-| 📜 **Repo History** | Tracks all repositories created through the app |
+| Smart Cleaning | Automatically removes 30+ types of junk directories and files |
+| Secret Detection | Scans for exposed API keys, tokens, passwords, and secret files |
+| One-Click Push | Creates a GitHub repository and pushes your code in one step |
+| Org Support | Push to personal accounts or any GitHub Organization you belong to |
+| Project Scan | Displays file statistics before cleaning |
+| Multilingual UI | Supports English, Arabic, Russian, French, Hindi, and Chinese |
+| RTL Support | Full right-to-left layout for Arabic |
+| Repo History | Tracks all repositories created through the app |
+| License Selection | Choose a license template when creating your repository |
 
 ---
 
-## 🖥️ Supported Platforms
+## Supported Platforms
 
-| Platform | Status |
-|---|---|
-| Windows 10/11 | ✅ Fully supported |
-| macOS | ✅ Supported (requires build on macOS) |
-| Linux | ✅ Supported (requires build on Linux) |
+| Platform | Status | Notes |
+|---|---|---|
+| Windows 10/11 | Fully supported | Primary development platform |
+| macOS (Apple Silicon) | Fully supported | Built via GitHub Actions |
+| macOS (Intel) | Fully supported | Built via GitHub Actions |
+| Linux (x86_64) | Fully supported | Built via GitHub Actions |
 
 ---
 
-## 🏗️ Tech Stack
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
@@ -59,16 +82,17 @@ Ideal for developers preparing projects for AI code review with ChatGPT, Claude,
 | Frontend | [Next.js 14](https://nextjs.org) + TypeScript |
 | Styling | Tailwind CSS |
 | Local Database | SQLite (via `rusqlite`) |
-| Git Operations | `git2` (libgit2 — no system Git required) |
-| Analytics DB | PostgreSQL (optional, via `sqlx`) |
+| Push System | GitHub REST API (Contents API) |
+| Auth | GitHub OAuth 2.0 |
+| Build/CI | GitHub Actions |
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org) ≥ 18
+- [Node.js](https://nodejs.org) >= 18
 - [Rust](https://rustup.rs) (stable toolchain)
 - [Tauri CLI prerequisites](https://tauri.app/start/prerequisites/) for your platform
 
@@ -85,12 +109,11 @@ cd lidbridge
 cp .env.example .env
 ```
 
-Open `.env` and fill in your values:
+Open `.env` and fill in your GitHub OAuth credentials:
 
 ```env
-GITHUB_CLIENT_ID=your_github_client_id
-GITHUB_CLIENT_SECRET=your_github_client_secret
-DATABASE_URL=postgresql://...   # Optional — leave empty to disable analytics
+GITHUB_CLIENT_ID=your_github_client_id_here
+GITHUB_CLIENT_SECRET=your_github_client_secret_here
 ```
 
 ### 3. Set Up GitHub OAuth App
@@ -103,66 +126,80 @@ DATABASE_URL=postgresql://...   # Optional — leave empty to disable analytics
    - **Authorization callback URL**: `http://localhost:2026/callback`
 4. Copy the **Client ID** and **Client Secret** into your `.env`
 
-### 4. Set Up GitHub App Private Key (Optional — for Org push)
+> You can also skip OAuth entirely: on the login screen, use **"Use Personal Token"** and paste a GitHub PAT (classic, with `repo` scope). This needs no client ID/secret.
 
-If you want to push to GitHub Organizations via a GitHub App:
-
-1. Go to [github.com/settings/apps](https://github.com/settings/apps)
-2. Create or select your GitHub App
-3. Generate a private key
-4. Place the file at: `src-tauri/src/keys/private-key.pem`
-
-> ⚠️ The private key is listed in `.gitignore` and will never be committed.
-
-### 5. Install Dependencies
+### 4. Install Dependencies
 
 ```bash
 npm install
 ```
 
-### 6. Run in Development Mode
+### 5. Run in Development Mode
 
 ```bash
-npm run tauri dev
+npx tauri dev
 ```
 
 ---
 
-## 🔨 Building for Production
+## Building for Production
+
+### Local Build
 
 ```bash
-npm run tauri build
+npx tauri build
 ```
 
 The installer will be generated in `src-tauri/target/release/bundle/`.
 
+### Automated Builds (GitHub Actions)
+
+When you push a tag like `v2.0.0`, GitHub Actions automatically builds for:
+
+- **Windows** (.msi, .exe)
+- **macOS Intel** (.dmg)
+- **macOS Apple Silicon** (.dmg)
+- **Linux** (.deb, .AppImage)
+
+Build artifacts are attached to the GitHub Release as a draft.
+
+```bash
+git tag v2.0.0
+git push origin v2.0.0
+```
+
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 lidbridge/
 ├── src/                        # Next.js frontend
 │   └── app/
-│       ├── page.tsx            # Main application UI
-│       ├── layout.tsx          # Root layout
+│       ├── page.tsx            # Main application + translations
+│       ├── components/
+│       │   └── dashboard-ui.tsx # UI components
 │       └── globals.css         # Global styles & design tokens
 │
 ├── src-tauri/                  # Rust/Tauri backend
 │   ├── src/
 │   │   ├── lib.rs              # Application entry point & Tauri commands
 │   │   ├── main.rs             # Binary entry point
-│   │   ├── auth/               # GitHub OAuth authentication
-│   │   ├── cleaner/            # Project scanning & cleaning engine
-│   │   ├── db/                 # Local SQLite + optional PostgreSQL
-│   │   ├── git/                # Git operations via libgit2
+│   │   ├── auth/               # GitHub OAuth (reads from .env)
+│   │   ├── cleaner/            # Project scanning & secret detection
+│   │   ├── db/                 # Local SQLite + deprecated PostgreSQL
+│   │   ├── git/                # Push via GitHub Contents API
+│   │   ├── secret/             # Encryption utilities
 │   │   ├── github_app.rs       # GitHub App JWT token generation
-│   │   └── keys/               # Private key storage (gitignored)
-│   ├── build.rs                # Build script — bakes env vars at compile time
+│   │   └── history_store.rs    # Encrypted local repo history
 │   ├── Cargo.toml              # Rust dependencies
 │   └── tauri.conf.json         # Tauri window & bundle configuration
 │
+├── .github/workflows/
+│   └── build.yml               # CI/CD — builds for Win/Mac/Linux
+│
 ├── .env.example                # Environment variable template
+├── .env                        # Your secrets (NEVER committed)
 ├── .gitignore                  # Protects secrets from being committed
 ├── package.json                # Node.js scripts & dependencies
 └── README.md                   # This file
@@ -170,9 +207,7 @@ lidbridge/
 
 ---
 
-## 🧹 What Gets Cleaned?
-
-LidBridge removes the following categories of files and directories:
+## What Gets Cleaned?
 
 | Category | Examples |
 |---|---|
@@ -189,39 +224,65 @@ LidBridge removes the following categories of files and directories:
 
 ---
 
-## 🔒 Security
+## Secret Detection
 
-LidBridge scans your project for common secret patterns before pushing:
+LidBridge scans your project for:
 
+### By Content (Regex Patterns)
 - GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`)
-- OpenAI API keys (`sk-...`)
-- AWS Access Keys (`AKIA...`)
+- OpenAI API keys (`sk-...`, `sk-proj-...`)
+- AWS Access Keys (`AKIA...`) and Secret Keys
 - Google API keys (`AIza...`)
-- Stripe keys (`sk_live_...`)
+- Stripe keys (`sk_live_`, `rk_live_`)
 - Discord bot tokens
-- Generic `api_key=`, `password=`, `token=` patterns
+- Slack tokens (`xox...`)
+- JWT tokens (`eyJ...`)
+- Generic `api_key=`, `password=`, `token=`, `secret_key=` patterns
+- OAuth client secrets, private key references, embedded credentials in URLs
+
+### By Filename
+- `.env` files (all variants: `.env.local`, `.env.production`, etc.)
+- `credentials.json`, `secrets.json`, `service-account.json`
+- SSH keys (`id_rsa`, `id_ed25519`, `deploy_key`)
+- Certificate files (`.pem`, `.p12`, `.key`, `.crt`)
 
 ---
 
-## 🤝 Contributing
+## Security
+
+### For Users
+The login screen displays a warning to verify you downloaded LidBridge from an official source:
+- **GitHub**: [github.com/Lidprex/Lidbridge](https://github.com/Lidprex/Lidbridge)
+- **Releases**: [github.com/Lidprex/Lidbridge/releases](https://github.com/Lidprex/Lidbridge/releases)
+- **Website**: [lidbridge.onrender.com](https://lidbridge.onrender.com)
+
+### For Developers
+- OAuth credentials are stored in `.env` — never hardcoded in source
+- `.env` is listed in `.gitignore` and will never be committed
+- The PostgreSQL analytics database is **deprecated** in v2.0.0 and will return with a proper backend
+
+---
+
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit your changes: `git commit -m 'feat: add my feature'`
-4. Push to the branch: `git push origin feature/my-feature`
-5. Open a Pull Request
+3. Copy `.env.example` to `.env` and fill in your OAuth credentials
+4. Commit your changes: `git commit -m 'feat: add my feature'`
+5. Push to the branch: `git push origin feature/my-feature`
+6. Open a Pull Request
 
-Please make sure you do **not** commit `.env` or `private-key.pem`.
+Please make sure you do **not** commit `.env` or any private keys.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **GNU General Public License v3.0**.
 See [LICENSE.txt](src-tauri/LICENSE.txt) for the full license text.
 
 ```
-LidBridge — Copyright (C) 2025 Lidprex Labs
+LidBridge — Copyright (C) 2026 Lidprex Labs
 This program comes with ABSOLUTELY NO WARRANTY.
 This is free software, and you are welcome to redistribute it
 under the conditions of the GNU GPL v3.
@@ -229,17 +290,17 @@ under the conditions of the GNU GPL v3.
 
 ---
 
-## 🔗 Links
+## Links
 
 | | |
 |---|---|
-| 🌐 Website | [lidprex.onrender.com](https://lidprex.onrender.com) |
-| 🧪 Labs | [lidprex-labs.onrender.com](https://lidprex-labs.onrender.com) |
-| 👤 Lead Developer | [github.com/bxat01](https://github.com/bxat01) |
-| 🏢 Organization | [github.com/lidprex](https://github.com/lidprex) |
-| 📦 RepoPrep | [repoprep.onrender.com](https://repoprep.onrender.com) |
+| Website | [lidprex.onrender.com](https://lidprex.onrender.com) |
+| Labs | [lidprex-labs.onrender.com](https://lidprex-labs.onrender.com) |
+| Lead Developer | [github.com/bxat01](https://github.com/bxat01) |
+| Organization | [github.com/lidprex](https://github.com/lidprex) |
+
 ---
 
 <div align="center">
-  <sub>Built with ❤️ by <strong>Lidprex Labs</strong></sub>
+  <sub>Built with care by <strong>Lidprex Labs</strong></sub>
 </div>
