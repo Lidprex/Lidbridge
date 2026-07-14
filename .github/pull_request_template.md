@@ -11,37 +11,26 @@
 
 Briefly describe what this PR does.
 
-Example:
-"Adds Turkish language support to the dropdown menu"
-
 ## Testing Performed
 
-- [ ] `cargo fmt`
+- [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy -- -D warnings`
 - [ ] `cargo test`
-- [ ] `npm run lint`
-- [ ] Manual testing on Windows 10/11
+- [ ] `tsc --noEmit`
+- [ ] Manual testing on: ___
 
 ## Related Issue
 
 Closes #(issue number)
 
-## Additional Notes (Optional)
-
-Anything the reviewer should know.
-
-Example:
-- "This PR depends on #123"
-- "Couldn't test edge case X because ..."
-
-## Final Checklist
+## Checklist
 
 - [ ] Code follows project standards
-- [ ] `README.md` updated if needed
-- [ ] `src/i18n/index.ts` updated if adding a language
+- [ ] README.md updated if needed
+- [ ] `page.tsx` translations updated if adding a language
 - [ ] No secrets / API keys in code
-- [ ] Public Rust APIs documented with `///`
+- [ ] `.env` variables documented in `.env.example`
 
 ---
 
-**Thanks for contributing to Lidbridge! 🦀**
+**Thanks for contributing to LidBridge!**
