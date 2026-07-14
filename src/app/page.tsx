@@ -1,15 +1,11 @@
-﻿// LidBridge — Open-Source Desktop Tool for Cleaning and Publishing Projects to GitHub
-// Copyright (C) 2025 Lidprex Labs <https://lidprex.onrender.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 'use client'
 
 import { useState, useEffect, createContext, useContext } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { open as openShell } from '@tauri-apps/plugin-shell'
-// Types
+import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
+import { DashboardUI } from './components/dashboard-ui'
 interface User {
   id: number
   github_id: string
@@ -37,6 +33,9 @@ interface ScanResult {
   clean_size: number
   project_type: string
   skippable: Record<string, number>
+  secrets_count: number
+  secret_matches: string[]
+  secret_suggestions: string[]
 }
 
 interface CleanResult {
@@ -56,6 +55,8 @@ interface RepoConfig {
   is_private: boolean
   include_images: boolean
   create_readme: boolean
+  license_template: string
+  repo_type: string
 }
 
 interface ProgressState {
@@ -75,6 +76,7 @@ type TranslationKey =
   | 'lead_developer' | 'organization' | 'instagram' | 'video_editor'
   | 'history' | 'history_title' | 'created_at' | 'owner' | 'your_repositories'
   | 'language' | 'scanning' | 'copying' | 'files_copied' | 'files_deleted'
+  | 'security_warning'
 
 type Translations = {
   [key in TranslationKey]: string
@@ -120,7 +122,7 @@ const translations: Record<string, Translations> = {
     ai_analysis: 'AI Analysis',
     ai_analysis_title: 'AI Analysis with GitHub Copilot',
     ai_analysis_title_sub: '(Coming Soon)',
-    ai_analysis_pro: '🔒 This will be a Pro feature due to API costs.',
+    ai_analysis_pro: 'This will be a Pro feature due to API costs.',
     about: 'About',
     about_title: 'About LidBridge',
     created_by: 'Created By',
@@ -136,6 +138,7 @@ const translations: Record<string, Translations> = {
     owner: 'Owner',
     your_repositories: 'My Repositories',
     language: 'Language',
+    security_warning: 'Make sure you downloaded this app from the official source. Download only from: GitHub Repository: github.com/Lidprex/Lidbridge, GitHub Releases: github.com/Lidprex/Lidbridge/releases, Official Website: lidbridge.onrender.com. If you did not download from these sources, do NOT log in.',
   },
   ar: {
     welcome: 'مرحباً بك في LidBridge',
@@ -176,7 +179,7 @@ const translations: Record<string, Translations> = {
     ai_analysis: 'تحليل الذكاء الاصطناعي',
     ai_analysis_title: 'تحليل الذكاء الاصطناعي مع GitHub Copilot',
     ai_analysis_title_sub: '(قريباً)',
-    ai_analysis_pro: '🔒 ميزة مدفوعة بسبب تكاليف API',
+    ai_analysis_pro: 'ميزة مدفوعة بسبب تكاليف API',
     about: 'حول',
     about_title: 'حول LidBridge',
     created_by: 'صنع بواسطة',
@@ -192,6 +195,7 @@ const translations: Record<string, Translations> = {
     owner: 'المالك',
     your_repositories: 'مستودعاتي',
     language: 'اللغة',
+    security_warning: 'تأكد من أنك قمت بتنزيل هذا التطبيق من المصدر الرسمي. قم بالتنزيل فقط من: مستودع GitHub: github.com/Lidprex/Lidbridge, إصدارات GitHub: github.com/Lidprex/Lidbridge/releases, الموقع الرسمي: lidbridge.onrender.com. إذا لم تقم بالتنزيل من هذه المصادر، لا تقم بتسجيل الدخول.',
   },
   fr: {
     welcome: 'Bienvenue sur LidBridge',
@@ -232,7 +236,7 @@ const translations: Record<string, Translations> = {
     ai_analysis: 'Analyse IA',
     ai_analysis_title: 'Analyse IA avec GitHub Copilot',
     ai_analysis_title_sub: '(Bientôt)',
-    ai_analysis_pro: '🔒 Fonctionnalité Pro',
+    ai_analysis_pro: 'Fonctionnalite Pro',
     about: 'À propos',
     about_title: 'À propos de LidBridge',
     created_by: 'Créé par',
@@ -248,6 +252,7 @@ const translations: Record<string, Translations> = {
     owner: 'Propriétaire',
     your_repositories: 'Mes dépôts',
     language: 'Langue',
+    security_warning: "Assurez-vous d'avoir téléchargé cette application depuis la source officielle. Téléchargez uniquement depuis : Dépôt GitHub : github.com/Lidprex/Lidbridge, Versions GitHub : github.com/Lidprex/Lidbridge/releases, Site officiel : lidbridge.onrender.com. Si vous ne l'avez pas téléchargée depuis ces sources, ne vous connectez PAS.",
   },
   hi: {
     welcome: 'LidBridge में आपका स्वागत है',
@@ -288,7 +293,7 @@ const translations: Record<string, Translations> = {
     ai_analysis: 'AI विश्लेषण',
     ai_analysis_title: 'GitHub Copilot के साथ AI विश्लेषण',
     ai_analysis_title_sub: '(जल्द आ रहा है)',
-    ai_analysis_pro: '🔒 Pro सुविधा',
+    ai_analysis_pro: 'Pro सुविधा',
     about: 'के बारे में',
     about_title: 'LidBridge के बारे में',
     created_by: 'द्वारा बनाया गया',
@@ -304,6 +309,7 @@ const translations: Record<string, Translations> = {
     owner: 'स्वामी',
     your_repositories: 'मेरे रिपॉजिटरी',
     language: 'भाषा',
+    security_warning: 'सुनिश्चित करें कि आपने इस ऐप को आधिकारिक स्रोत से डाउनलोड किया है। केवल इनसे डाउनलोड करें: GitHub रिपॉजिटरी: github.com/Lidprex/Lidbridge, GitHub रिलीज़: github.com/Lidprex/Lidbridge/releases, आधिकारिक वेबसाइट: lidbridge.onrender.com। यदि आपने इन स्रोतों से डाउनलोड नहीं किया है, तो लॉग इन न करें।',
   },
   zh: {
     welcome: '欢迎使用 LidBridge',
@@ -344,7 +350,7 @@ const translations: Record<string, Translations> = {
     ai_analysis: 'AI 分析',
     ai_analysis_title: 'GitHub Copilot AI 分析',
     ai_analysis_title_sub: '(即将推出)',
-    ai_analysis_pro: '🔒 Pro 功能',
+    ai_analysis_pro: 'Pro 功能',
     about: '关于',
     about_title: '关于 LidBridge',
     created_by: '创建者',
@@ -360,10 +366,66 @@ const translations: Record<string, Translations> = {
     owner: '拥有者',
     your_repositories: '我的仓库',
     language: '语言',
+    security_warning: '请确保您从官方来源下载了此应用。仅从以下地址下载：GitHub 仓库：github.com/Lidprex/Lidbridge，GitHub 发布版：github.com/Lidprex/Lidbridge/releases，官方网站：lidbridge.onrender.com。如果您不是从这些来源下载的，请勿登录。',
+  },
+  ru: {
+    welcome: 'Добро пожаловать в LidBridge',
+    subtitle: 'Очистите проекты и отправьте на GitHub за секунды',
+    connect_github: 'Подключить GitHub',
+    logout: 'Выйти',
+    step1: 'Шаг 1: Выберите проект',
+    step2: 'Шаг 2: Очистите проект',
+    step3: 'Шаг 3: Отправьте на GitHub',
+    browse_folder: 'Выбрать папку',
+    no_folder: 'Папка не выбрана',
+    files_to_remove: 'Файлы для удаления:',
+    clean_project: 'Очистить проект',
+    cleaning: 'Очистка...',
+    push_github: 'Отправить на GitHub',
+    create_repo: 'Создать репозиторий GitHub',
+    repo_name: 'Название репозитория',
+    description: 'Описание (необязательно)',
+    visibility: 'Видимость',
+    public: 'Публичный',
+    private: 'Приватный',
+    include_images: 'Включить изображения/иконки',
+    create_readme: 'Создать README',
+    target_folder: 'Папка назначения',
+    browse_target_folder: 'Выбрать назначение',
+    no_target_folder: 'Назначение не выбрано',
+    cancel: 'Отмена',
+    create_push: 'Создать и отправить',
+    analyzing: 'Анализ проекта...',
+    scanning: 'Сканирование проекта...',
+    copying: 'Копирование файлов...',
+    cleaning_complete: 'Очистка завершена!',
+    push_complete: 'Отправка завершена!',
+    success: 'Успешно',
+    error: 'Ошибка',
+    files_copied: 'Скопировано',
+    files_deleted: 'Удалено',
+    ai_analysis: 'ИИ анализ',
+    ai_analysis_title: 'ИИ анализ с GitHub Copilot',
+    ai_analysis_title_sub: '(Скоро)',
+    ai_analysis_pro: 'Функция Pro',
+    about: 'О приложении',
+    about_title: 'О LidBridge',
+    created_by: 'Автор',
+    parent_company: 'Материнская компания',
+    the_lab: 'Лаборатория',
+    lead_developer: 'Главный разработчик',
+    organization: 'Организация',
+    instagram: 'Instagram',
+    video_editor: 'Видео редактор',
+    history: 'История репозиториев',
+    history_title: 'История созданных репозиториев',
+    created_at: 'Создано',
+    owner: 'Владелец',
+    your_repositories: 'Мои репозитории',
+    language: 'Язык',
+    security_warning: 'Убедитесь, что вы скачали это приложение из официального источника. Скачивайте только с: GitHub репозиторий: github.com/Lidprex/Lidbridge, GitHub релизы: github.com/Lidprex/Lidbridge/releases, официальный сайт: lidbridge.onrender.com. Если вы скачали не из этих источников, НЕ входите в систему.',
   },
 }
-
-// ============ COMPONENTS ============
 
 interface LanguageContextType {
   lang: string
@@ -419,6 +481,7 @@ function LanguageSwitcher() {
   const languages = [
     { code: 'en', name: 'English', flag: '🇺🇸' },
     { code: 'ar', name: 'العربية', flag: '🇸🇦' },
+    { code: 'ru', name: 'Русский', flag: '🇷🇺' },
     { code: 'fr', name: 'Français', flag: '🇫🇷' },
     { code: 'hi', name: 'हिन्दी', flag: '🇮🇳' },
     { code: 'zh', name: '中文', flag: '🇨🇳' },
@@ -560,6 +623,12 @@ function AuthScreen({ onLogin }: { onLogin: () => void }) {
             </div>
           </div>
         )}
+        <div className="mt-6 p-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5">
+          <div className="flex items-start gap-2">
+            <svg className="w-4 h-4 text-yellow-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" /></svg>
+            <p className="text-xs text-yellow-500/80 leading-relaxed">{t('security_warning')}</p>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -609,6 +678,19 @@ function StepCleanProject({ selectedPath, targetPath, onSelectTargetFolder, onCl
               </div>
             </div>
           )}
+          {(scanResult.secrets_count || 0) > 0 && (
+            <div className="rounded-lg border border-warning/40 bg-warning/10 p-4">
+              <p className="text-sm font-medium text-warning">Potential secrets detected</p>
+              <p className="text-xs text-text-secondary mt-1">We found {scanResult.secrets_count} potential secret-like values. Review these before publishing or pushing to GitHub.</p>
+              {scanResult.secret_matches.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {scanResult.secret_matches.slice(0, 6).map((match) => (
+                    <span key={match} className="px-3 py-1 bg-bg-secondary rounded-full text-xs text-text-muted">{match}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
       <div className="mb-4">
@@ -633,7 +715,7 @@ function StepCleanProject({ selectedPath, targetPath, onSelectTargetFolder, onCl
         {cleaning ? (
           <><svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>{t('cleaning')}</>
         ) : cleaned ? (
-          <>✅ {t('cleaning_complete')}</>
+          <><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> {t('cleaning_complete')}</>
         ) : (
           <><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>{t('clean_project')}</>
         )}
@@ -650,6 +732,8 @@ function StepPushToGitHub({ cleanedPath, onPush, pushing }: { cleanedPath: strin
   const [isPrivate, setIsPrivate] = useState(true)
   const [includeImages, setIncludeImages] = useState(true)
   const [createReadme, setCreateReadme] = useState(true)
+  const [licenseTemplate, setLicenseTemplate] = useState('mit')
+  const [repoType, setRepoType] = useState('standard')
   const [ownerType, setOwnerType] = useState<'user' | 'org'>('user')
   const [organizations, setOrganizations] = useState<Array<{login: string, id: number}>>([])
   const [selectedOrg, setSelectedOrg] = useState('')
@@ -680,7 +764,7 @@ function StepPushToGitHub({ cleanedPath, onPush, pushing }: { cleanedPath: strin
 
   const handlePush = () => {
     const ownerName = ownerType === 'user' ? '' : selectedOrg
-    onPush({ name: repoName, description, is_private: isPrivate, include_images: includeImages, create_readme: createReadme }, ownerType, ownerName)
+    onPush({ name: repoName, description, is_private: isPrivate, include_images: includeImages, create_readme: createReadme, license_template: licenseTemplate, repo_type: repoType }, ownerType, ownerName)
     setShowModal(false)
   }
 
@@ -695,7 +779,7 @@ function StepPushToGitHub({ cleanedPath, onPush, pushing }: { cleanedPath: strin
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-bg-secondary border border-border-subtle rounded-lg p-6 w-full max-w-md">
             <h3 className="text-xl font-semibold text-text-primary mb-6">{t('create_repo')}</h3>
-            <div className="space-y-4">
+        <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
               
               <div>
                 <label className="block text-text-secondary text-sm mb-2">Push to</label>
@@ -736,6 +820,8 @@ function StepPushToGitHub({ cleanedPath, onPush, pushing }: { cleanedPath: strin
               
               <div><label className="block text-text-secondary text-sm mb-2">{t('repo_name')}</label><input type="text" value={repoName} onChange={(e) => setRepoName(e.target.value)} className="input w-full" placeholder="my-project" /></div>
               <div><label className="block text-text-secondary text-sm mb-2">{t('description')}</label><textarea value={description} onChange={(e) => setDescription(e.target.value)} className="input w-full h-24 resize-none" placeholder="A brief description..." /></div>
+              <div><label className="block text-text-secondary text-sm mb-2">License</label><select value={licenseTemplate} onChange={(e) => setLicenseTemplate(e.target.value)} className="input w-full"><option value="mit">MIT</option><option value="apache-2.0">Apache-2.0</option><option value="gpl-3.0">GPL-3.0</option><option value="none">None</option></select></div>
+              <div><label className="block text-text-secondary text-sm mb-2">Repository Type</label><select value={repoType} onChange={(e) => setRepoType(e.target.value)} className="input w-full"><option value="standard">Standard</option><option value="template">Template</option></select></div>
               <div><label className="block text-text-secondary text-sm mb-2">{t('visibility')}</label><div className="flex gap-4"><button onClick={() => setIsPrivate(false)} className={`flex-1 py-2 rounded-md border ${!isPrivate ? 'bg-accent-primary text-black border-accent-primary' : 'border-border-subtle'}`}>{t('public')}</button><button onClick={() => setIsPrivate(true)} className={`flex-1 py-2 rounded-md border ${isPrivate ? 'bg-accent-primary text-black border-accent-primary' : 'border-border-subtle'}`}>{t('private')}</button></div></div>
               <div className="space-y-2"><label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={includeImages} onChange={(e) => setIncludeImages(e.target.checked)} className="checkbox" /><span className="text-text-secondary">{t('include_images')}</span></label><label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={createReadme} onChange={(e) => setCreateReadme(e.target.checked)} className="checkbox" /><span className="text-text-secondary">{t('create_readme')}</span></label></div>
             </div>
@@ -747,9 +833,28 @@ function StepPushToGitHub({ cleanedPath, onPush, pushing }: { cleanedPath: strin
   )
 }
 
-function ProgressBar({ progress }: { progress: ProgressState }) {
-  const { t } = useLanguage()
-  return (<div className="card"><div className="flex justify-between text-text-secondary text-sm mb-2"><span>{progress.message}</span><span>{progress.percentage}%</span></div><div className="progress-bar"><div className="progress-fill" style={{ width: `${progress.percentage}%` }}></div></div></div>)
+function ProgressBar({ progress, runLog, t }: { progress: ProgressState; runLog?: string[]; t?: (key: string) => string }) {
+  const { t: contextT } = useLanguage()
+  const translate = t || contextT
+  return (
+    <div className="card space-y-3">
+      <div className="flex justify-between text-text-secondary text-sm mb-2">
+        <span>{progress.message || translate('scanning')}</span>
+        <span>{progress.percentage}%</span>
+      </div>
+      <div className="progress-bar">
+        <div className="progress-fill" style={{ width: `${progress.percentage}%` }}></div>
+      </div>
+      {runLog && runLog.length > 0 && (
+        <div className="rounded-lg border border-border-subtle bg-bg-primary/70 p-3 text-sm text-text-secondary">
+          <p className="mb-2 font-medium text-text-primary">Run log</p>
+          <div className="space-y-1">
+            {runLog.slice(-4).reverse().map((item, index) => <p key={`${item}-${index}`} className="truncate">• {item}</p>)}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function Toast({ message, type, onClose }: { message: string; type: 'success' | 'error' | 'warning'; onClose: () => void }) {
@@ -765,7 +870,7 @@ function Toast({ message, type, onClose }: { message: string; type: 'success' | 
 function AIAnalysisModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { t } = useLanguage()
   if (!isOpen) return null
-  return (<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}><div className="bg-gradient-to-br from-bg-secondary to-bg-tertiary border border-accent-primary/30 rounded-2xl p-8 w-full max-w-lg" onClick={(e) => e.stopPropagation()}><div className="text-center mb-6"><div className="w-20 h-20 bg-gradient-to-br from-accent-primary to-accent-secondary rounded-2xl flex items-center justify-center mx-auto mb-4"><svg className="w-10 h-10 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg></div><h2 className="text-2xl font-bold text-text-primary">{t('ai_analysis_title')}</h2><p className="text-accent-primary text-sm mt-1">{t('ai_analysis_title_sub')}</p></div><div className="space-y-4 mb-6"><div className="bg-bg-primary/50 rounded-xl p-4 border"><div className="flex items-start gap-3"><div className="w-8 h-8 bg-accent-primary/20 rounded-lg flex items-center justify-center"><svg className="w-4 h-4 text-accent-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg></div><div><h4 className="text-text-primary font-medium">Smart README Generation</h4><p className="text-text-secondary text-sm mt-1">AI generates detailed documentation and file structure analysis</p></div></div></div><div className="bg-bg-primary/50 rounded-xl p-4 border"><div className="flex items-start gap-3"><div className="w-8 h-8 bg-accent-secondary/20 rounded-lg flex items-center justify-center"><svg className="w-4 h-4 text-accent-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg></div><div><h4 className="text-text-primary font-medium">Security Scan</h4><p className="text-text-secondary text-sm mt-1">Detects exposed API keys or secrets before pushing to GitHub</p></div></div></div></div><div className="bg-gradient-to-r from-accent-primary/10 to-accent-secondary/10 rounded-xl p-4 border border-accent-primary/20"><p className="text-text-secondary text-sm text-center">{t('ai_analysis_pro')}</p><p className="text-text-muted text-xs text-center mt-2">As an independent developer, I cannot provide this feature for free. GitHub Copilot API costs are high, and this helps me maintain the app for everyone.</p></div><button onClick={onClose} className="btn btn-primary w-full mt-6">Got it! 🚀</button></div></div>)
+  return (<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}><div className="bg-gradient-to-br from-bg-secondary to-bg-tertiary border border-accent-primary/30 rounded-2xl p-8 w-full max-w-lg" onClick={(e) => e.stopPropagation()}><div className="text-center mb-6"><div className="w-20 h-20 bg-gradient-to-br from-accent-primary to-accent-secondary rounded-2xl flex items-center justify-center mx-auto mb-4"><svg className="w-10 h-10 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg></div><h2 className="text-2xl font-bold text-text-primary">{t('ai_analysis_title')}</h2><p className="text-accent-primary text-sm mt-1">{t('ai_analysis_title_sub')}</p></div><div className="space-y-4 mb-6"><div className="bg-bg-primary/50 rounded-xl p-4 border"><div className="flex items-start gap-3"><div className="w-8 h-8 bg-accent-primary/20 rounded-lg flex items-center justify-center"><svg className="w-4 h-4 text-accent-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg></div><div><h4 className="text-text-primary font-medium">Smart README Generation</h4><p className="text-text-secondary text-sm mt-1">AI generates detailed documentation and file structure analysis</p></div></div></div><div className="bg-bg-primary/50 rounded-xl p-4 border"><div className="flex items-start gap-3"><div className="w-8 h-8 bg-accent-secondary/20 rounded-lg flex items-center justify-center"><svg className="w-4 h-4 text-accent-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg></div><div><h4 className="text-text-primary font-medium">Security Scan</h4><p className="text-text-secondary text-sm mt-1">Detects exposed API keys or secrets before pushing to GitHub</p></div></div></div></div><div className="rounded-xl border border-accent-primary/30 bg-accent-primary/5 p-5"><div className="flex items-start gap-3"><span className="text-lg flex-shrink-0"></span><div><p className="text-text-primary text-sm font-medium">{t('ai_analysis_pro')}</p><p className="text-text-secondary text-sm mt-2">As an independent developer, I cannot provide this feature for free. GitHub Copilot API costs are high, and this helps me maintain the app for everyone.</p></div></div></div><button onClick={onClose} className="btn btn-secondary w-full mt-6">Close</button></div></div>)
 }
 
 function HistoryModal({ isOpen, repos, onClose }: { isOpen: boolean; repos: Array<{repo_name: string; repo_url: string; owner_type: string; owner_name: string; created_at: string;}>; onClose: () => void }) {
@@ -813,12 +918,12 @@ function AboutModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
   return (<div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}><div className="bg-gradient-to-br from-bg-secondary to-bg-tertiary border border-accent-secondary/30 rounded-2xl p-8 w-full max-w-md" onClick={(e) => e.stopPropagation()}><div className="text-center mb-6"><img src="https://res.cloudinary.com/ddqedxovk/image/upload/v1777644756/zdmst5ng01o20lam01ou.png" alt="Logo" className="w-24 h-24 mx-auto rounded-2xl mb-4" /><h2 className="text-2xl font-bold text-text-primary">{t('about_title')}</h2><p className="text-text-secondary text-sm mt-1">v1.0.0</p></div><div className="text-center mb-6"><p className="text-text-muted text-sm">{t('created_by')}</p><p className="text-xl font-bold bg-gradient-to-r from-accent-primary to-accent-secondary bg-clip-text text-transparent">Lidprex Labs</p></div><div className="space-y-3">{links.map((link, i) => (<a key={i} href={link.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-3 p-3 bg-bg-primary/50 rounded-xl border hover:border-accent-secondary/50"><div className="w-8 h-8 bg-accent-secondary/20 rounded-lg flex items-center justify-center"><svg className="w-4 h-4 text-accent-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={link.icon} /></svg></div><span className="text-text-secondary">{link.label}</span><svg className="w-4 h-4 text-text-muted ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg></a>))}</div><button onClick={onClose} className="btn btn-secondary w-full mt-6">Close</button></div></div>)
 }
 
-// Main Dashboard
 function Dashboard() {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [selectedPath, setSelectedPath] = useState('')
   const [cleanedPath, setCleanedPath] = useState('')
+  const [scanning, setScanning] = useState(false)
   const [cleaning, setCleaning] = useState(false)
   const [cleaned, setCleaned] = useState(false)
   const [pushing, setPushing] = useState(false)
@@ -829,10 +934,10 @@ function Dashboard() {
   const [showHistory, setShowHistory] = useState(false)
   const [repoHistory, setRepoHistory] = useState<Array<{repo_name: string; repo_url: string; owner_type: string; owner_name: string; created_at: string;}>>([])
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
+  const [runLog, setRunLog] = useState<string[]>([])
   const [targetPath, setTargetPath] = useState('')
   const [includeImages, setIncludeImages] = useState(false)
-  const [showTokenModal, setShowTokenModal] = useState(false)
-  const [tokenInput, setTokenInput] = useState('')
+  const [secretReplacements, setSecretReplacements] = useState<Record<string, string>>({})
   const { t, isRTL } = useLanguage()
 
   useEffect(() => { checkSession() }, [])
@@ -853,21 +958,10 @@ function Dashboard() {
     return () => { unlisten.then(fn => fn()) }
   }, [t])
 
-  useEffect(() => {
-    const unlistenOAuth = listen<string>('oauth-code-received', async (event) => {
-      const code = event.payload
-      try {
-        setToast({ message: 'Completing authentication...', type: 'success' })
-        const user = await invoke<User>('complete_oauth', { code })
-        setUser(user)
-        setToast({ message: 'Successfully logged in!', type: 'success' })
-      } catch (err) {
-        console.error('OAuth completion error:', err)
-        setToast({ message: `Authentication failed: ${err}`, type: 'error' })
-      }
-    })
-    return () => { unlistenOAuth.then(fn => fn()) }
-  }, [])
+  const appendRunLog = (message: string) => {
+    const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    setRunLog((prev) => [...prev.slice(-19), `${stamp} • ${message}`])
+  }
 
   const checkSession = async () => {
     try {
@@ -882,10 +976,11 @@ function Dashboard() {
   
   const handleLogin = async () => {
     try {
-      setToast({ message: 'Opening GitHub login...', type: 'success' })
-      await invoke('start_oauth')
+      setToast({ message: 'Opening GitHub in browser...', type: 'warning' })
+      await invoke<string>('start_oauth')
+      setToast({ message: 'Authorize in your browser. You will be signed in automatically.', type: 'success' })
     } catch (err) {
-      setToast({ message: 'Failed to start OAuth', type: 'error' })
+      setToast({ message: `Failed to start OAuth: ${err}`, type: 'error' })
     }
   }
   
@@ -922,22 +1017,25 @@ function Dashboard() {
       setCleanedPath('')
       setCleaned(false)
       setScanResult(null)
-      
+      setProgress({ percentage: 0, message: t('scanning') })
       
       const projectName = folder.split(/[/\\]/).pop() || 'project'
       const parentPath = folder.substring(0, folder.lastIndexOf(folder.includes('/') ? '/' : '\\'))
       const pathSeparator = parentPath.includes('\\') ? '\\' : '/'
       const autoTargetPath = `${parentPath}${parentPath.endsWith(pathSeparator) ? '' : pathSeparator}${projectName}_LidBridge`
       setTargetPath(autoTargetPath)
+      appendRunLog(`Scanning project ${projectName}`)
       
       const result = await invoke<ScanResult>('scan_project_command', { 
         sourceDir: folder, 
         includeImages: false 
       })
       setScanResult(result)
+      appendRunLog(`Scan completed: ${result.total_files} files, ${result.secrets_count} potential secrets`)
+      setSecretReplacements(Object.fromEntries((result.secret_matches || []).map((match) => [match, ''])))
       setToast({ 
         message: `Found ${result.total_files} files (${result.clean_files} clean)`, 
-        type: 'success' 
+        type: result.secrets_count > 0 ? 'warning' : 'success' 
       })
     }
   } catch (err) {
@@ -964,6 +1062,9 @@ function Dashboard() {
   
   setCleaning(true)
   setProgress({ percentage: 0, message: t('scanning') })
+  if (scanResult && scanResult.secrets_count > 0) {
+    setToast({ message: `Potential secrets detected (${scanResult.secrets_count}). Review them before publishing.`, type: 'warning' })
+  }
   try {
     const projectName = selectedPath.split(/[/\\]/).pop() || 'project'
     const parentPath = selectedPath.substring(0, selectedPath.lastIndexOf(selectedPath.includes('/') ? '/' : '\\'))
@@ -981,9 +1082,11 @@ function Dashboard() {
           include_videos: false,
           include_documents: false,
           create_readme: false,
+          secret_replacements: Object.entries(secretReplacements).filter(([, value]) => value.trim()).map(([name, replacement]) => ({ name, replacement })),
         }
       })
       if (result.success) {
+  appendRunLog(`Cleaning completed: ${result.copied_files} files copied`)
   setCleanedPath(result.cleaned_path)
   setCleaned(true)
 
@@ -1010,18 +1113,20 @@ function Dashboard() {
   setProgress({ percentage: 0, message: 'Initializing repository...' })
   
   try {
+    appendRunLog(`Creating repository ${config.name}`)
     const repoUrl = await invoke<string>('create_and_push_command', { 
       path: cleanedPath, 
       config, 
       ownerType, 
       ownerName 
     })
+    appendRunLog(`Repository published: ${repoUrl}`)
     
     setProgress({ percentage: 100, message: t('push_complete') })
     
     
     const userConfirmed = window.confirm(
-      `✅ Repository created successfully!\n\nClick OK to open: ${repoUrl}\n\nOr press Cancel to close.`
+      `Repository created successfully!\n\nClick OK to open: ${repoUrl}\n\nOr press Cancel to close.`
     );
     
     if (userConfirmed) {
@@ -1035,7 +1140,7 @@ function Dashboard() {
     
     
     if (errorMsg.includes("403") || errorMsg.includes("Resource not accessible")) {
-      const message = `❌ Permission Error (403 Forbidden)
+      const message = `Permission Error (403 Forbidden)
 
 Your GitHub OAuth token doesn't have the required permissions.
 
@@ -1060,7 +1165,7 @@ Follow these steps:
       if (ownerType === 'org') {
         const installUrl = "https://github.com/apps/lidbridge/installations/new";
         const confirmed = window.confirm(
-          `⚠️ GitHub App not installed.\n\nClick OK to install the app, then try again.\n\nCancel to close.`
+          `GitHub App not installed.\n\nClick OK to install the app, then try again.\n\nCancel to close.`
         );
         if (confirmed) {
           window.open(installUrl, '_blank');
@@ -1105,7 +1210,7 @@ Follow these steps:
             setIncludeImages={setIncludeImages}
           />
           <StepPushToGitHub cleanedPath={cleanedPath} onPush={handlePush} pushing={pushing} />
-          {(cleaning || pushing) && <ProgressBar progress={progress} />}
+          {(cleaning || pushing) && <ProgressBar progress={progress} runLog={runLog} t={(key: string) => t(key as TranslationKey)} />}
         </main>
       )}
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
@@ -1116,6 +1221,332 @@ Follow these steps:
   )
 }
 
+function PageShell() {
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [selectedPath, setSelectedPath] = useState('')
+  const [cleanedPath, setCleanedPath] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [cleaning, setCleaning] = useState(false)
+  const [cleaned, setCleaned] = useState(false)
+  const [pushing, setPushing] = useState(false)
+  const [pushResultUrl, setPushResultUrl] = useState('')
+  const [progress, setProgress] = useState<ProgressState>({ percentage: 0, message: '' })
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null)
+  const [showAIModal, setShowAIModal] = useState(false)
+  const [showAboutModal, setShowAboutModal] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [repoHistory, setRepoHistory] = useState<Array<{repo_name: string; repo_url: string; owner_type: string; owner_name: string; created_at: string;}>>([])
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null)
+  const [runLog, setRunLog] = useState<string[]>([])
+  const [targetPath, setTargetPath] = useState('')
+  const [includeImages, setIncludeImages] = useState(false)
+  const [createReadme, setCreateReadme] = useState(false)
+  const [secretReplacements, setSecretReplacements] = useState<Record<string, string>>({})
+  const { t, isRTL, lang, setLang } = useLanguage()
+
+  useEffect(() => { checkSession() }, [])
+  useEffect(() => {
+    isPermissionGranted().then(granted => {
+      if (!granted) requestPermission()
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const unlisten = listen<CleanProgress>('cleaning-progress', (event) => {
+      const p = event.payload
+      let message = ''
+      switch (p.phase) {
+        case 'scanning': message = t('scanning'); break
+        case 'copying': message = t('copying'); break
+        case 'cleaning': message = t('cleaning'); break
+        case 'complete': message = t('cleaning_complete'); break
+        default: message = p.phase
+      }
+      setProgress({ percentage: p.percentage, message })
+    })
+    return () => { unlisten.then(fn => fn()) }
+  }, [t])
+
+  useEffect(() => {
+    const unlistenOAuth = listen<string>('oauth-code-received', async (event) => {
+      const code = event.payload
+      try {
+        setToast({ message: 'Completing authentication...', type: 'success' })
+        const user = await invoke<User>('complete_oauth', { code })
+        if (user) {
+          setUser(user)
+          fetchRepoHistory()
+          setToast({ message: 'Successfully logged in!', type: 'success' })
+        } else {
+          setToast({ message: 'Authentication completed but session could not be loaded.', type: 'error' })
+        }
+      } catch (err) {
+        console.error('OAuth completion error:', err)
+        setToast({ message: `Authentication failed: ${err}`, type: 'error' })
+      }
+    })
+    const unlistenOAuthStatus = listen<string>('oauth-status', (event) => {
+      const status = event.payload
+      const isError = status.toLowerCase().includes('error') || status.toLowerCase().includes('failed')
+      const isScopeWarning = status.toLowerCase().includes('lacks') || status.toLowerCase().includes('scope')
+      if (isError) {
+        setToast({ message: status, type: 'error' })
+      } else if (isScopeWarning) {
+        setToast({ message: status, type: 'warning' })
+      }
+    })
+    return () => { unlistenOAuth.then(fn => fn()); unlistenOAuthStatus.then(fn => fn()) }
+  }, [])
+
+  const appendRunLog = (message: string) => {
+    const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    setRunLog((prev) => [...prev.slice(-19), `${stamp} • ${message}`])
+  }
+
+  const fetchRepoHistory = async () => {
+    try {
+      const history = await invoke<Array<{repo_name: string; repo_url: string; owner_type: string; owner_name: string; created_at: string;}>>('get_repo_history')
+      setRepoHistory(history)
+    } catch (err) {
+      console.error('Failed to load repo history:', err)
+    }
+  }
+
+  const checkSession = async () => {
+    try {
+      const session = await invoke<User | null>('get_session')
+      setUser(session)
+      if (session) fetchRepoHistory()
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleLogin = async () => {
+    try {
+      setToast({ message: 'Opening GitHub login...', type: 'warning' })
+      await invoke('start_oauth')
+    } catch (err) {
+      setToast({ message: 'Failed to start OAuth', type: 'error' })
+    }
+  }
+
+  const handleLogout = async () => {
+    try {
+      await invoke('logout')
+      setUser(null)
+      setSelectedPath('')
+      setCleanedPath('')
+      setScanResult(null)
+      setCleaned(false)
+    } catch (err) {
+      setToast({ message: 'Failed to logout', type: 'error' })
+    }
+  }
+
+  const handlePersonalTokenLogin = async (token: string) => {
+    try {
+      await invoke('save_github_token', { token })
+      const session = await invoke<User | null>('get_session')
+      if (!session) throw new Error('GitHub did not return a session')
+      setUser(session)
+      setToast({ message: 'Successfully logged in with a personal token.', type: 'success' })
+    } catch (err) {
+      setToast({ message: `Personal token login failed: ${err}`, type: 'error' })
+      throw err
+    }
+  }
+
+  const handleSelectFolder = async () => {
+    try {
+      const folder = await openDialog({ directory: true, title: 'Select Project Folder' })
+      if (folder && typeof folder === 'string') {
+        setSelectedPath(folder)
+        setCleanedPath('')
+        setCleaned(false)
+        setScanResult(null)
+        setScanning(true)
+        setProgress({ percentage: 0, message: t('scanning') })
+        const projectName = folder.split(/[/\\]/).pop() || 'project'
+        appendRunLog(`Scanning project ${projectName}`)
+        const parentPath = folder.substring(0, folder.lastIndexOf(folder.includes('/') ? '/' : '\\'))
+        const pathSeparator = parentPath.includes('\\') ? '\\' : '/'
+        const autoTargetPath = `${parentPath}${parentPath.endsWith(pathSeparator) ? '' : pathSeparator}${projectName}_LidBridge`
+        setTargetPath(autoTargetPath)
+        const result = await invoke<ScanResult>('scan_project_command', { sourceDir: folder, includeImages: false })
+        setScanResult(result)
+        appendRunLog(`Scan completed: ${result.total_files} files, ${result.secrets_count} potential secrets`)
+        setSecretReplacements(Object.fromEntries((result.secret_matches || []).map((match) => [match, ''])))
+        setToast({ message: `Found ${result.total_files} files (${result.clean_files} clean)`, type: result.secrets_count > 0 ? 'warning' : 'success' })
+      }
+    } catch (err) {
+      console.error('Error selecting folder:', err)
+      setToast({ message: 'Failed to select folder', type: 'error' })
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  const handleSelectTargetFolder = async () => {
+    try {
+      const folder = await openDialog({ directory: true, title: 'Select Destination Folder' })
+      if (folder && typeof folder === 'string') {
+        const projectName = selectedPath.split(/[/\\]/).pop() || 'project'
+        const separator = folder.includes('\\') ? '\\' : '/'
+        setTargetPath(`${folder}${folder.endsWith(separator) ? '' : separator}${projectName}_LidBridge`)
+      }
+    } catch (err) {
+      setToast({ message: 'Failed to select destination folder', type: 'error' })
+    }
+  }
+
+  const handleSecretReplacementChange = (secretName: string, value: string) => {
+    setSecretReplacements((prev) => ({ ...prev, [secretName]: value }))
+  }
+
+  const handleApplySecretReplacements = () => {
+    setToast({ message: 'Secret replacements prepared for the cleaned output.', type: 'success' })
+  }
+
+  const handleClean = async () => {
+    if (!selectedPath) return
+    setCleaning(true)
+    setProgress({ percentage: 0, message: t('scanning') })
+    if (scanResult && scanResult.secrets_count > 0) {
+      setToast({ message: `Potential secrets detected (${scanResult.secrets_count}). Review them before publishing.`, type: 'warning' })
+    }
+    try {
+      const projectName = selectedPath.split(/[/\\]/).pop() || 'project'
+      const parentPath = selectedPath.substring(0, selectedPath.lastIndexOf(selectedPath.includes('/') ? '/' : '\\'))
+      const outputDir = targetPath || `${parentPath}${parentPath.includes('\\') ? '\\' : '/'}${projectName}_LidBridge`
+      appendRunLog(`Cleaning project into ${outputDir}`)
+      const result = await invoke<CleanResult>('start_cleaning_command', {
+        sourceDir: selectedPath,
+        outputDir,
+        options: {
+          mode: 'clean',
+          include_images: includeImages,
+          include_videos: false,
+          include_documents: false,
+          create_readme: createReadme,
+          secret_replacements: Object.entries(secretReplacements).filter(([, value]) => value.trim()).map(([name, replacement]) => ({ name, replacement })),
+        }
+      })
+      if (result.success) {
+        appendRunLog(`Cleaning completed: ${result.copied_files} files copied`)
+        setCleanedPath(result.cleaned_path)
+        setCleaned(true)
+        setProgress({ percentage: 100, message: t('cleaning_complete') })
+        setToast({ message: `Cleaned ${result.copied_files} files`, type: 'success' })
+        result.warnings.forEach((warning) => setToast({ message: warning, type: 'warning' }))
+      } else {
+        setToast({ message: 'Failed to clean project', type: 'error' })
+      }
+    } catch (err) {
+      setToast({ message: `Error cleaning project: ${err}`, type: 'error' })
+    } finally {
+      setCleaning(false)
+    }
+  }
+
+  const handlePush = async (config: RepoConfig, ownerType: string, ownerName: string) => {
+    if (!cleanedPath) {
+      setToast({ message: 'Please clean a project first!', type: 'warning' })
+      return
+    }
+    setPushing(true)
+    setPushResultUrl('')
+    setProgress({ percentage: 0, message: 'Creating repository...' })
+    try {
+      appendRunLog(`Creating repository ${config.name}`)
+      const repoUrl = await invoke<string>('create_and_push_command', { path: cleanedPath, config, ownerType, ownerName })
+      appendRunLog(`Repository published: ${repoUrl}`)
+      setProgress({ percentage: 100, message: t('push_complete') })
+      setPushResultUrl(repoUrl)
+      setToast({ message: 'Successfully pushed to GitHub!', type: 'success' })
+      await fetchRepoHistory()
+      isPermissionGranted().then(granted => {
+        if (granted) sendNotification({ title: 'LidBridge', body: `Repository "${config.name}" pushed successfully!` })
+      }).catch(() => {})
+    } catch (err) {
+      const errorMsg = err as string
+      if (errorMsg.includes('403') || errorMsg.includes('Resource not accessible')) {
+        const message = `Permission Error (403 Forbidden)\n\nYour GitHub token doesn't have the required permissions.\n\nFollow these steps:\n1. Go to GitHub settings\n2. Ensure the token has repo access\n3. Try again.`
+        const confirmed = window.confirm(message + '\n\nClick OK to open GitHub settings')
+        if (confirmed) window.open('https://github.com/settings/tokens/new', '_blank')
+        setToast({ message: 'Permission error - check GitHub token permissions', type: 'error' })
+      } else {
+        setToast({ message: `Failed to push: ${errorMsg}`, type: 'error' })
+      }
+    } finally {
+      setPushing(false)
+    }
+  }
+
+  const handleResetAfterPush = () => {
+    setPushResultUrl('')
+    setSelectedPath('')
+    setCleanedPath('')
+    setCleaned(false)
+    setScanResult(null)
+    setTargetPath('')
+    setProgress({ percentage: 0, message: '' })
+  }
+
+  return (
+    <DashboardUI
+      user={user}
+      loading={loading}
+      selectedPath={selectedPath}
+      cleanedPath={cleanedPath}
+      scanning={scanning}
+      cleaning={cleaning}
+      cleaned={cleaned}
+      pushing={pushing}
+      progress={progress}
+      toast={toast}
+      repoHistory={repoHistory}
+      scanResult={scanResult}
+      runLog={runLog}
+      targetPath={targetPath}
+      includeImages={includeImages}
+      createReadme={createReadme}
+      showAIModal={showAIModal}
+      showAboutModal={showAboutModal}
+      showHistory={showHistory}
+      isRTL={isRTL}
+      t={(key: string) => t(key as TranslationKey)}
+      setIncludeImages={setIncludeImages}
+      setCreateReadme={setCreateReadme}
+      onLogin={handleLogin}
+      onPersonalTokenLogin={handlePersonalTokenLogin}
+      onLogout={handleLogout}
+      onAIAnalysis={() => setShowAIModal(true)}
+      onAbout={() => setShowAboutModal(true)}
+      onHistory={() => { setShowHistory(true); fetchRepoHistory() }}
+      onSelectFolder={handleSelectFolder}
+      onSelectTargetFolder={handleSelectTargetFolder}
+      onClean={handleClean}
+      onPush={handlePush}
+      pushResultUrl={pushResultUrl}
+      onResetAfterPush={handleResetAfterPush}
+      onCloseToast={() => setToast(null)}
+      onCloseAIModal={() => setShowAIModal(false)}
+      onCloseAboutModal={() => setShowAboutModal(false)}
+      onCloseHistoryModal={() => setShowHistory(false)}
+      onOpenSecretReview={() => {}}
+      secretReplacements={secretReplacements}
+      onSecretReplacementChange={handleSecretReplacementChange}
+      onApplySecretReplacements={handleApplySecretReplacements}
+      lang={lang}
+      setLang={setLang}
+    />
+  )
+}
+
 export default function Home() {
-  return (<LanguageProvider><Dashboard /></LanguageProvider>)
+  return (<LanguageProvider><PageShell /></LanguageProvider>)
 }
