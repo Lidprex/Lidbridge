@@ -1,29 +1,19 @@
-// LidBridge — Open-Source Desktop Tool for Cleaning and Publishing Projects to GitHub
-// Copyright (C) 2026 Lidprex Labs <https://lidprex.onrender.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-
 #![windows_subsystem = "windows"]
 
 use tokio::sync::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
 use tauri::Emitter;
 pub mod auth;
 pub mod cleaner;
 pub mod git;
 pub mod db;
 pub mod github_app;
+pub mod history_store;
+pub mod secret;
 
 pub struct AppState {
-    pub db: Mutex<db::Database>,
     pub auth: Mutex<auth::AuthManager>,
-    pub central_db: Mutex<Option<db::central::CentralDb>>,
-    pub oauth_callback_tx: Mutex<Option<oneshot::Sender<String>>>,
+    pub history_store: Mutex<history_store::HistoryStore>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,13 +41,12 @@ pub struct RepoConfig {
     pub is_private: bool,
     pub include_images: bool,
     pub create_readme: bool,
+    pub license_template: String,
+    pub repo_type: String,
 }
-
-// ========== OAUTH CALLBACK SERVER ==========
 
 async fn start_oauth_server(app_handle: tauri::AppHandle, port: u16) -> Result<(), String> {
     let addr = format!("127.0.0.1:{}", port);
-
     log::info!("Starting OAuth callback server on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -84,7 +73,7 @@ async fn start_oauth_server(app_handle: tauri::AppHandle, port: u16) -> Result<(
                         } else if let Some(end) = rest.find(' ') {
                             Some(rest[..end].to_string())
                         } else {
-                            Some(rest.to_string())
+                            Some(rest.trim_end_matches(" HTTP").to_string())
                         }
                     } else {
                         None
@@ -95,65 +84,24 @@ async fn start_oauth_server(app_handle: tauri::AppHandle, port: u16) -> Result<(
                         let _ = app_handle.emit("oauth-code-received", &code);
                         r#"<!DOCTYPE html>
 <html>
-<head>
-    <meta charset="UTF-8">
-    <title>LidBridge - Authentication Successful</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0A0A0F 0%, #1a1a2e 100%);
-            color: white;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .container { text-align: center; }
-        .success { font-size: 48px; margin-bottom: 20px; }
-        h1 { color: #00D4FF; margin-bottom: 10px; }
-        p { color: #888; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="success">✅</div>
-        <h1>Authentication Successful!</h1>
-        <p>You can close this window and return to LidBridge.</p>
-        <script>setTimeout(() => window.close(), 3000);</script>
-    </div>
-</body>
-</html>"#.to_string()
+<head><meta charset="UTF-8"><title>LidBridge</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#0A0A0F 0%,#1a1a2e 100%);color:white;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+.success{font-size:48px;margin-bottom:20px}h1{color:#00D4FF;margin-bottom:10px}p{color:#888}</style></head>
+<body><div style="text-align:center">
+<div style="color:#2ea043;font-size:48px;line-height:1">&#10003;</div>
+<h1>Authentication Successful!</h1><p>You can close this window and return to LidBridge.</p>
+<script>setTimeout(() => window.close(), 3000)</script>
+</div></body></html>"#.to_string()
                     } else {
                         r#"<!DOCTYPE html>
 <html>
-<head>
-    <meta charset="UTF-8">
-    <title>LidBridge - Error</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0A0A0F 0%, #1a1a2e 100%);
-            color: white;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .container { text-align: center; }
-        .error { font-size: 48px; margin-bottom: 20px; }
-        h1 { color: #ff4757; margin-bottom: 10px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="error">❌</div>
-        <h1>Authentication Failed</h1>
-        <p>Please try again.</p>
-    </div>
-</body>
-</html>"#.to_string()
+<head><meta charset="UTF-8"><title>LidBridge</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#0A0A0F 0%,#1a1a2e 100%);color:white;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+.error{font-size:48px;margin-bottom:20px}h1{color:#ff4757}</style></head>
+<body><div style="text-align:center">
+<div style="color:#ff4757;font-size:48px;line-height:1">&#10007;</div>
+<h1>Authentication Failed</h1><p>Please try again.</p>
+</div></body></html>"#.to_string()
                     };
 
                     let response_str = format!(
@@ -173,21 +121,17 @@ async fn start_oauth_server(app_handle: tauri::AppHandle, port: u16) -> Result<(
     Ok(())
 }
 
-// ========== TAURI COMMANDS ==========
-
 #[tauri::command]
 async fn get_session(state: tauri::State<'_, AppState>) -> Result<Option<User>, String> {
-    let db = state.db.lock().await;
-    match db.get_user_info() {
-        Ok(Some((github_id, email, name, avatar_url))) => {
-            Ok(Some(User {
-                id: 0,
-                github_id,
-                email,
-                name,
-                avatar_url,
-            }))
-        }
+    let store = state.history_store.lock().await;
+    match store.load_session() {
+        Ok(Some(session)) => Ok(Some(User {
+            id: 0,
+            github_id: session.github_id,
+            email: session.email,
+            name: session.name,
+            avatar_url: session.avatar_url,
+        })),
         Ok(None) => Ok(None),
         Err(e) => Err(e),
     }
@@ -195,16 +139,19 @@ async fn get_session(state: tauri::State<'_, AppState>) -> Result<Option<User>, 
 
 #[tauri::command]
 async fn get_repo_history(state: tauri::State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
-    let db = state.db.lock().await;
-    let history = db.get_repo_history()?;
+    let store = state.history_store.lock().await;
+    if store.load_session()?.is_none() {
+        return Err("Sign in to GitHub before viewing repository history".to_string());
+    }
+    let history = store.load_repo_history()?;
 
-    let repos = history.into_iter().map(|(repo_name, repo_url, owner_type, owner_name, created_at)| {
+    let repos = history.into_iter().map(|entry| {
         serde_json::json!({
-            "repo_name": repo_name,
-            "repo_url": repo_url,
-            "owner_type": owner_type,
-            "owner_name": owner_name,
-            "created_at": created_at,
+            "repo_name": entry.repo_name,
+            "repo_url": entry.repo_url,
+            "owner_type": entry.owner_type,
+            "owner_name": entry.owner_name,
+            "created_at": entry.created_at,
         })
     }).collect();
 
@@ -212,25 +159,11 @@ async fn get_repo_history(state: tauri::State<'_, AppState>) -> Result<Vec<serde
 }
 
 #[tauri::command]
-async fn start_oauth(app_handle: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let auth_url = {
-        let auth = state.auth.lock().await;
-        let (auth_url, csrf_token) = auth.get_authorization_url();
-        log::info!("OAuth started with CSRF token: {}", csrf_token);
-        auth_url
-    };
+async fn start_oauth(_app_handle: tauri::AppHandle) -> Result<String, String> {
+    let auth = auth::AuthManager::new();
+    let state = uuid::Uuid::new_v4().to_string().replace("-", "");
+    let auth_url = auth.build_auth_url(&state);
 
-    // Run the callback server on the shared async runtime instead of spawning a
-    // std thread with its own nested tokio runtime.
-    let app_handle_clone = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = start_oauth_server(app_handle_clone, 2026).await {
-            log::error!("OAuth server error: {}", e);
-        }
-    });
-
-    // Give the callback server a moment to bind before opening the browser.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let _ = open::that(&auth_url);
 
     Ok(auth_url)
@@ -239,7 +172,6 @@ async fn start_oauth(app_handle: tauri::AppHandle, state: tauri::State<'_, AppSt
 #[tauri::command]
 async fn complete_oauth(code: String, state: tauri::State<'_, AppState>) -> Result<User, String> {
     let auth = state.auth.lock().await;
-    let db = state.db.lock().await;
 
     let access_token = auth.exchange_code_for_token(&code)
         .await
@@ -249,50 +181,36 @@ async fn complete_oauth(code: String, state: tauri::State<'_, AppState>) -> Resu
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut installation_id = String::new();
-    let client = reqwest::Client::new();
+    let local_avatar = auth.download_avatar(&avatar_url).await.unwrap_or_default();
+    let avatar_to_save = if local_avatar.is_empty() { avatar_url.clone() } else { local_avatar };
 
-    if let Ok(resp) = client
-        .get("https://api.github.com/user/installations")
-        .bearer_auth(&access_token)
-        .header("User-Agent", "LidBridge")
-        .send()
-        .await
-    {
-        if let Ok(json) = resp.json::<serde_json::Value>().await {
-            if let Some(installs) = json["installations"].as_array() {
-                for inst in installs {
-                    if inst["app_id"].as_i64() == Some(3522405) {
-                        if let Some(id) = inst["id"].as_i64() {
-                            installation_id = id.to_string();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    drop(auth);
 
-    db.save_session_token(&access_token, &github_id, &email, &name, &avatar_url, &installation_id)
+    let history_store = state.history_store.lock().await;
+    history_store.save_session(&access_token, &github_id, &email, &name, &avatar_to_save, "")
         .map_err(|e| e.to_string())?;
-
-    if let Some(central_db) = state.central_db.lock().await.as_ref() {
-        let _ = central_db.upsert_user(&github_id, &name, &email, &avatar_url).await;
-    }
 
     Ok(User {
         id: 0,
         github_id,
         email,
         name,
-        avatar_url,
+        avatar_url: avatar_to_save,
     })
 }
 
 #[tauri::command]
 async fn logout(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let db = state.db.lock().await;
-    db.clear_session()
+    let history_store = state.history_store.lock().await;
+    history_store.clear_session().map_err(|e| e.to_string())?;
+
+    let avatar_dir = dirs::data_local_dir()
+        .map(|d| d.join("LidBridge").join("avatars"));
+    if let Some(dir) = avatar_dir {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -304,8 +222,14 @@ async fn save_github_token(token: String, state: tauri::State<'_, AppState>) -> 
             .map_err(|e| format!("Invalid token: {}", e))?
     };
 
-    let db = state.db.lock().await;
-    db.save_session_token(&token, &github_id, &email, &name, &avatar_url, "")
+    let local_avatar = {
+        let auth = state.auth.lock().await;
+        auth.download_avatar(&avatar_url).await.unwrap_or_default()
+    };
+    let avatar_to_save = if local_avatar.is_empty() { avatar_url } else { local_avatar };
+
+    let history_store = state.history_store.lock().await;
+    history_store.save_session(&token, &github_id, &email, &name, &avatar_to_save, "")
         .map_err(|e| e.to_string())?;
 
     Ok(())
@@ -340,18 +264,17 @@ pub struct CleanOptionsDto {
     pub include_videos: bool,
     pub include_documents: bool,
     pub create_readme: bool,
+    pub secret_replacements: Vec<cleaner::SecretReplacement>,
 }
 
 #[tauri::command]
 async fn start_cleaning_command(
     source_dir: String,
     output_dir: String,
-    state: tauri::State<'_, AppState>,
+    _state: tauri::State<'_, AppState>,
     options: CleanOptionsDto,
     app_handle: tauri::AppHandle,
 ) -> Result<cleaner::CleanResult, String> {
-    let start_time = std::time::Instant::now();
-
     let mode = match options.mode.as_str() {
         "flatten" => cleaner::CleanMode::Flatten,
         _ => cleaner::CleanMode::Clean,
@@ -363,14 +286,9 @@ async fn start_cleaning_command(
         include_videos: options.include_videos,
         include_documents: options.include_documents,
         create_readme: options.create_readme,
+        secret_replacements: options.secret_replacements,
     };
 
-    let user_info = {
-        let db = state.db.lock().await;
-        db.get_user_info().ok().flatten()
-    };
-
-    // Cleaning is CPU/IO-bound; run it on a blocking thread so the UI never freezes.
     let handle = app_handle.clone();
     let result = tokio::task::spawn_blocking(move || {
         cleaner::start_cleaning(&source_dir, &output_dir, clean_options, Some(&handle))
@@ -378,36 +296,26 @@ async fn start_cleaning_command(
     .await
     .map_err(|e| format!("Cleaning task failed: {}", e))??;
 
-    let execution_time_ms = start_time.elapsed().as_millis() as i32;
-    let junk_mb = result.total_size_bytes as f64 / (1024.0 * 1024.0);
-
-    if let Some((github_id, email, name, avatar_url)) = user_info {
-        let central_guard = state.central_db.lock().await;
-        if let Some(central_db) = central_guard.as_ref() {
-            let _ = central_db.upsert_user(&github_id, &name, &email, &avatar_url).await;
-            let _ = central_db.log_clean(&github_id, result.total_size_bytes, "clean_operation").await;
-            let _ = central_db.update_global_stats(
-                0, junk_mb, execution_time_ms, 0.0, 0, 0, true, junk_mb,
-            ).await;
-        }
-    }
-
     Ok(result)
 }
 
 #[tauri::command]
-fn scan_project_command(source_dir: String, include_images: bool) -> Result<cleaner::ScanResult, String> {
-    let result = cleaner::scan_project(&source_dir, include_images);
-    Ok(result)
+async fn scan_project_command(source_dir: String, include_images: bool, app_handle: tauri::AppHandle) -> Result<cleaner::ScanResult, String> {
+    tokio::task::spawn_blocking(move || {
+        cleaner::scan_project_with_progress(&source_dir, include_images, Some(&app_handle))
+    })
+    .await
+    .map_err(|e| format!("Scanning task failed: {}", e))
 }
 
 #[tauri::command]
 async fn get_user_organizations(state: tauri::State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     let token = {
-        let db = state.db.lock().await;
-        db.get_session_token()
+        let store = state.history_store.lock().await;
+        store.load_session()
             .map_err(|e| e.to_string())?
             .ok_or("No GitHub token found. Please login again.")?
+            .access_token
     };
 
     let client = reqwest::Client::new();
@@ -432,18 +340,17 @@ async fn create_and_push_command(
     owner_type: String,
     owner_name: String,
 ) -> Result<String, String> {
-    let start_time = std::time::Instant::now();
+    let session = {
+        let store = state.history_store.lock().await;
+        store.load_session()
+            .map_err(|e| e.to_string())?
+            .ok_or("No GitHub session found. Please login again.")?
+    };
 
-    let db = state.db.lock().await;
-    let token = db.get_session_token()
-        .map_err(|e| e.to_string())?
-        .ok_or("No GitHub token found. Please login again.")?;
-
-    let user_info = db.get_user_info()
-        .map_err(|e| e.to_string())?
-        .ok_or("No user information found. Please login again.")?;
-
-    let (github_id, email, name, avatar_url) = user_info;
+    let token = session.access_token;
+    let github_id = session.github_id.clone();
+    let email = session.email.clone();
+    let name = session.name.clone();
 
     let client = reqwest::Client::new();
     let scope_check = client
@@ -458,9 +365,20 @@ async fn create_and_push_command(
         let scopes_str = scopes.to_str().unwrap_or("");
         log::info!("Current token scopes: {}", scopes_str);
 
-        if !scopes_str.contains("repo") {
-            return Err("Token missing 'repo' scope...".to_string());
+        let allowed_scopes = ["repo", "repo:status", "repo_deployment", "public_repo", "repo:invite", "security_events"];
+        let has_valid_scope = scopes_str.split(',')
+            .map(|s| s.trim())
+            .any(|s| allowed_scopes.contains(&s));
+        if !has_valid_scope {
+            return Err(format!(
+                "Token lacks push permissions.\n\n\
+                 Current scopes: {}\n\n\
+                 Solution: Click 'Use Personal Token' on the login screen and enter a classic token with 'repo' scope.\n\
+                 Create one at: https://github.com/settings/tokens/new", scopes_str
+            ));
         }
+    } else {
+        log::warn!("No X-OAuth-Scopes header — proceeding but token may lack permissions");
     }
 
     let pusher = git::GitPusher::new(&token);
@@ -473,42 +391,11 @@ async fn create_and_push_command(
         &email
     ).await?;
 
-    let execution_time_ms = start_time.elapsed().as_millis() as i32;
-    log::info!("Push completed in {} ms", execution_time_ms);
-
     let owner_name_str = if owner_type == "org" { owner_name.clone() } else { github_id.clone() };
 
-    db.save_repo_history(&github_id, &config.name, &result, &owner_type, &owner_name_str)
+    let store = state.history_store.lock().await;
+    store.save_repo_history(&config.name, &result, &owner_type, &owner_name_str)
         .map_err(|e| format!("Failed to save repo history: {}", e))?;
-
-    let central_db_guard = state.central_db.lock().await;
-    if let Some(central_db) = central_db_guard.as_ref() {
-        match central_db.upsert_user(&github_id, &name, &email, &avatar_url).await {
-            Ok(_) => {
-                log::info!("User upserted in central db");
-                match central_db.log_repo_creation(&github_id, &config.name).await {
-                    Ok(_) => log::info!("Repo creation logged to central db"),
-                    Err(e) => log::warn!("Failed to log repo creation: {}", e),
-                }
-                match central_db.update_global_stats(
-                    0,
-                    0.0,
-                    execution_time_ms,
-                    0.0,
-                    0,
-                    0,
-                    true,
-                    0.0
-                ).await {
-                    Ok(_) => log::info!("Global stats updated"),
-                    Err(e) => log::warn!("Failed to update global stats: {}", e),
-                }
-            }
-            Err(e) => log::warn!("Failed to upsert user: {}", e),
-        }
-    } else {
-        log::warn!("Central database not available, skipping central logging");
-    }
 
     Ok(result)
 }
@@ -523,40 +410,29 @@ fn get_global_stats() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({}))
 }
 
-// ========== MAIN FUNCTION ==========
-
 pub fn run() {
-    dotenv::dotenv().ok();
+    let _ = dotenv::dotenv();
 
-    let db = db::Database::new().expect("Failed to initialize database");
     let auth = auth::AuthManager::new();
-
-    let central_db = match tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(db::central::CentralDb::new())
-    {
-        Ok(cdb) => {
-            log::info!("Connected to central database");
-            Some(cdb)
-        }
-        Err(e) => {
-            log::warn!("Could not connect to central database: {}", e);
-            log::warn!("Running WITHOUT central database. Global analytics will be disabled.");
-            None
-        }
-    };
+    let history_store = history_store::HistoryStore::new().expect("Failed to initialize encrypted history store");
 
     let app_state = AppState {
-        db: Mutex::new(db),
         auth: Mutex::new(auth),
-        central_db: Mutex::new(central_db),
-        oauth_callback_tx: Mutex::new(None),
+        history_store: Mutex::new(history_store),
     };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(app_state)
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = start_oauth_server(handle, 2026).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_session,
             get_repo_history,
