@@ -1,18 +1,17 @@
-// LidBridge — Open-Source Desktop Tool for Cleaning and Publishing Projects to GitHub
-// Copyright (C) 2026 Lidprex Labs <https://lidprex.onrender.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
 use std::fs;
 use walkdir::WalkDir;
-use rayon::prelude::*;
 use tauri::{AppHandle, Emitter};
 use serde::{Deserialize, Serialize};
 use regex::Regex;
 
-/// Progress event sent to the frontend during cleaning operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretReplacement {
+    pub name: String,
+    pub replacement: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanProgress {
     pub phase: String,
@@ -24,81 +23,54 @@ pub struct CleanProgress {
     pub deleted_count: usize,
 }
 
-/// Directories that should be excluded from clean output.
 const SKIP_DIRS: &[&str] = &[
-    // Version Control
     ".git", ".svn", ".hg", ".bzr",
-    // IDEs & Editors
     ".idea", ".vscode", ".vs", ".sublime-project", ".sublime-workspace",
     ".eclipse", ".settings", ".project", ".classpath",
-    // Python
     "__pycache__", ".pytest_cache", ".mypy_cache", ".coverage",
     ".tox", ".hypothesis", ".eggs", ".egg-info", ".venv", "venv", ".env", "ENV", "virtualenv",
-    // Node.js / JavaScript
     "node_modules", ".npm", ".yarn", ".pnp", ".pnpm-store", "bower_components",
-    // Build outputs
     "dist", "build", "target", "out", "bin", "obj", "release", "debug",
-    // Frameworks
     ".next", ".nuxt", ".gatsby", "next", "nuxt", ".angular", ".cache",
-    // Java / Kotlin
     ".gradle", ".m2", "gradle", "buildSrc",
-    // Mobile
     "Pods", ".xcworkspace", ".xcodeproj", "DerivedData", "AndroidStudioProjects",
-    // Misc
     "site-packages", "dist-packages", ".nyc_output", "__MACOSX",
     "temp", "tmp", "logs", ".logs", "backup",
 ];
 
-/// File extensions that are excluded from clean output.
 const SKIP_EXTENSIONS: &[&str] = &[
-    // Logs & Temp
     ".log", ".tmp", ".temp", ".bak", ".swp", ".swo", ".cache",
-    // Python
     ".pyc", ".pyo", ".pyd",
-    // Compiled
     ".so", ".dll", ".dylib", ".class", ".jar", ".war", ".ear",
     ".o", ".a", ".lib", ".obj", ".exe", ".msi",
-    // Archives
     ".zip", ".tar", ".gz", ".rar", ".7z", ".bz2", ".xz", ".iso",
-    // Media
     ".mp4", ".mp3", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".m4a", ".flac", ".wav",
-    // Fonts & Documents
     ".ttf", ".woff", ".woff2", ".eot", ".otf", ".pdf", ".doc", ".docx",
-    // Lock files
     ".lock", ".pid",
 ];
 
-/// Specific filenames that are excluded from clean output.
 const SKIP_FILES: &[&str] = &[
-    // OS artifacts
     ".DS_Store", "Thumbs.db", "desktop.ini", ".Spotlight-V100",
     ".Trashes", "ehthumbs.db", "Folder.jpg",
-    // Lock files
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "composer.lock", "Gemfile.lock",
     "Cargo.lock", "poetry.lock",
-    // Environment files
     ".env", ".env.local", ".env.production", ".env.development", ".env.test",
-    // Placeholders
     ".gitkeep", ".keep", ".empty",
 ];
 
-/// Image file extensions (included or excluded based on user option).
 const IMAGE_EXTENSIONS: &[&str] = &[
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp", ".bmp",
     ".tiff", ".tif", ".raw", ".cr2", ".nef", ".heic", ".avif",
 ];
 
-/// Video file extensions (included or excluded based on user option).
 const VIDEO_EXTENSIONS: &[&str] = &[
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg",
 ];
 
-/// Document file extensions (included or excluded based on user option).
 const DOCUMENT_EXTENSIONS: &[&str] = &[
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
 ];
 
-/// Regex patterns used to detect exposed secrets in source files.
 const SECRET_PATTERNS: &[(&str, &str)] = &[
     (r#"ghp_[a-zA-Z0-9]{36}"#, "GitHub Personal Access Token"),
     (r#"gho_[a-zA-Z0-9]{36}"#, "GitHub OAuth Token"),
@@ -115,9 +87,64 @@ const SECRET_PATTERNS: &[(&str, &str)] = &[
     (r#"(?i)secret[_-]?key[_-]?=[a-zA-Z0-9]{16,}"#, "Generic Secret Key"),
     (r#"(?i)password[_-]?=[a-zA-Z0-9]{8,}"#, "Plaintext Password"),
     (r#"(?i)token[_-]?=[a-zA-Z0-9]{16,}"#, "Access Token"),
+    (r#"xox[bpsa]-[0-9a-zA-Z-]{10,}"#, "Slack Token"),
+    (r#"(?i)client_secret[_-]?[=:]\s*['\"]?[a-zA-Z0-9_\-]{16,}['\"]?"#, "OAuth Client Secret"),
+    (r#"(?i)private[_-]?key[_-]?[=:]"#, "Private Key Reference"),
+    (r#"-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----"#, "Private Key File"),
+    (r#"eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}"#, "JWT Token"),
+    (r#"(?i)(aws_secret_access_key|AWS_SECRET_ACCESS_KEY)[=:]\s*['\"]?[a-zA-Z0-9/+=]{40}['\"]?"#, "AWS Secret Access Key"),
+    (r#"(?i)DATABASE_URL[_=]"#, "Database Connection String"),
+    (r#"(?i)(ftp|http|https)://[^:]+:[^@]+@"#, "Embedded Credentials in URL"),
 ];
 
-/// Returns true if the given directory name should be skipped.
+const SECRET_FILE_NAMES: &[&str] = &[
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.development",
+    ".env.test",
+    ".env.staging",
+    ".env.backup",
+    ".env.old",
+    "credentials.json",
+    "credentials.yaml",
+    "credentials.yml",
+    "credentials.xml",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "secret.txt",
+    "secret.key",
+    "service-account.json",
+    "service-account.yaml",
+    "firebase-service-account.json",
+    "gcloud-service-key.json",
+    ".htpasswd",
+    ".htaccess",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa.pub",
+    "id_ed25519.pub",
+    "deploy_key",
+    "deploy_key.pub",
+];
+
+const SECRET_FILE_EXTENSIONS: &[&str] = &[
+    ".pem",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+    ".key",
+    ".crt",
+    ".cert",
+    ".p7b",
+    ".p7c",
+    ".keystore",
+];
+
 pub fn should_skip_dir(name: &str) -> bool {
     let name_lower = name.to_lowercase();
     SKIP_DIRS.iter().any(|&dir| {
@@ -125,7 +152,6 @@ pub fn should_skip_dir(name: &str) -> bool {
     })
 }
 
-/// Scans file content for known secret patterns and returns matches.
 pub fn detect_secrets(content: &str) -> Vec<String> {
     let mut found = Vec::new();
 
@@ -140,7 +166,27 @@ pub fn detect_secrets(content: &str) -> Vec<String> {
     found
 }
 
-/// Returns true if the given file should be excluded from clean output.
+pub fn detect_secrets_in_filename(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+
+    for &secret_name in SECRET_FILE_NAMES {
+        if name.eq_ignore_ascii_case(secret_name) {
+            return Some(format!("Secret file detected: {}", name));
+        }
+    }
+
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let ext_lower = format!(".{}", ext.to_lowercase());
+        for &secret_ext in SECRET_FILE_EXTENSIONS {
+            if ext_lower == secret_ext {
+                return Some(format!("Potentially sensitive file ({}): {}", ext_lower, name));
+            }
+        }
+    }
+
+    None
+}
+
 pub fn should_skip_file(path: &Path, include_images: bool, include_videos: bool, include_documents: bool) -> bool {
     let name = path.file_name()
         .and_then(|n| n.to_str())
@@ -183,7 +229,6 @@ fn first_skip_dir<'a>(parts: &'a [&'a str]) -> Option<&'a str> {
     None
 }
 
-/// Summary statistics returned after scanning a project directory.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScanResult {
     pub total_files: usize,
@@ -196,9 +241,10 @@ pub struct ScanResult {
     pub project_type: String,
     pub skippable: std::collections::HashMap<String, u64>,
     pub secrets_count: usize,
+    pub secret_matches: Vec<String>,
+    pub secret_suggestions: Vec<String>,
 }
 
-/// Detects the project type based on common manifest files.
 pub fn detect_project_type(path: &Path) -> String {
     let checks = [
         (vec!["package.json"], "Node.js / JavaScript"),
@@ -232,8 +278,63 @@ pub fn detect_project_type(path: &Path) -> String {
     "Generic Project".to_string()
 }
 
-/// Scans a project directory and returns statistics without modifying any files.
+fn secret_suggestions_from_matches(matches: &[String]) -> Vec<String> {
+    matches.iter().map(|match_name| derive_placeholder_for_secret(match_name)).collect()
+}
+
+pub fn derive_placeholder_for_secret(match_name: &str) -> String {
+    let normalized = match_name.to_lowercase();
+    if normalized.contains("github") && normalized.contains("client") && normalized.contains("id") {
+        return "your_github_client_id".to_string();
+    }
+    if normalized.contains("github") && normalized.contains("client") && normalized.contains("secret") {
+        return "your_github_client_secret".to_string();
+    }
+    if normalized.contains("github") && normalized.contains("token") {
+        return "your_github_token".to_string();
+    }
+    if normalized.contains("openai") || normalized.contains("api key") {
+        return "your_api_key".to_string();
+    }
+    if normalized.contains("aws") {
+        return "your_aws_access_key".to_string();
+    }
+    if normalized.contains("password") {
+        return "your_password".to_string();
+    }
+    if normalized.contains("secret") {
+        return "your_secret".to_string();
+    }
+    "your_placeholder".to_string()
+}
+
+fn replace_secret_content(content: &str, replacements: &[SecretReplacement]) -> String {
+    let mut updated = content.to_string();
+    for replacement in replacements {
+        if replacement.replacement.trim().is_empty() {
+            continue;
+        }
+        let pattern = match replacement.name.to_lowercase().as_str() {
+            name if name.contains("github") && name.contains("token") => r#"gh[poush]_[A-Za-z0-9]{36}"#,
+            name if name.contains("openai") || name.contains("api key") => r#"sk-[A-Za-z0-9]{48}|sk-proj-[A-Za-z0-9]{48}"#,
+            name if name.contains("aws") => r#"AKIA[0-9A-Z]{16}"#,
+            name if name.contains("google") => r#"AIza[0-9A-Za-z\-_]{35}"#,
+            name if name.contains("password") => r#"(?i)(password|passwd|pwd)[^\n=]*=[^\n]+"#,
+            name if name.contains("secret") => r#"(?i)(secret|token)[^\n=]*=[^\n]+"#,
+            _ => continue,
+        };
+        if let Ok(re) = Regex::new(pattern) {
+            updated = re.replace_all(&updated, replacement.replacement.as_str()).into_owned();
+        }
+    }
+    updated
+}
+
 pub fn scan_project(source_dir: &str, include_images: bool) -> ScanResult {
+    scan_project_with_progress(source_dir, include_images, None)
+}
+
+pub fn scan_project_with_progress(source_dir: &str, include_images: bool, app_handle: Option<&AppHandle>) -> ScanResult {
     let path = Path::new(source_dir);
     let mut result = ScanResult::default();
 
@@ -242,22 +343,15 @@ pub fn scan_project(source_dir: &str, include_images: bool) -> ScanResult {
 
     result.project_type = detect_project_type(path);
 
-    let _skip_ext: HashSet<&str> = SKIP_EXTENSIONS.iter().copied().collect();
-    let image_ext: HashSet<&str> = IMAGE_EXTENSIONS.iter().copied().collect();
-
-    let _skip_ext_strings: HashSet<String> = if include_images {
-        _skip_ext.iter().map(|s| s.to_string()).collect()
-    } else {
-        _skip_ext.union(&image_ext).map(|s| s.to_string()).collect()
-    };
-
     let mut seen_dirs: HashSet<String> = HashSet::new();
+    let mut walker = WalkDir::new(path).follow_links(false).into_iter();
+    let mut scanned_files = 0usize;
 
-    for entry in WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    while let Some(entry) = walker.next() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
         let item_path = entry.path();
 
         if item_path.is_dir() {
@@ -265,19 +359,30 @@ pub fn scan_project(source_dir: &str, include_images: bool) -> ScanResult {
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
 
-            if should_skip_dir(name) && !seen_dirs.contains(name) {
+            if item_path != path && should_skip_dir(name) {
+                walker.skip_current_dir();
+                if seen_dirs.contains(name) {
+                    continue;
+                }
                 seen_dirs.insert(name.to_string());
                 result.skipped_dirs += 1;
 
-                let size: u64 = WalkDir::new(item_path)
+                let dir_size: u64 = WalkDir::new(item_path)
                     .into_iter()
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_file())
+                    .filter(|e| e.file_type().is_file())
                     .filter_map(|e| e.metadata().ok())
                     .map(|m| m.len())
                     .sum();
+                result.skippable.insert(name.to_string(), dir_size);
+                result.total_size += dir_size;
 
-                result.skippable.insert(name.to_string(), size);
+                let dir_file_count: usize = WalkDir::new(item_path)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().is_file())
+                    .count();
+                result.skipped_files += dir_file_count;
             }
             continue;
         }
@@ -286,17 +391,28 @@ pub fn scan_project(source_dir: &str, include_images: bool) -> ScanResult {
             continue;
         }
 
+        scanned_files += 1;
+        let size = match item_path.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        };
+
         if let Ok(content) = std::fs::read_to_string(item_path) {
             total_lines += content.lines().count();
 
             let secrets = detect_secrets(&content);
             secrets_count += secrets.len();
+            if !secrets.is_empty() {
+                result.secret_matches.extend(secrets);
+            }
         }
 
-        let size = match item_path.metadata() {
-            Ok(m) => m.len(),
-            Err(_) => 0,
-        };
+        if let Some(secret_desc) = detect_secrets_in_filename(item_path) {
+            if !result.secret_matches.contains(&secret_desc) {
+                result.secret_matches.push(secret_desc);
+                secrets_count += 1;
+            }
+        }
 
         result.total_files += 1;
         result.total_size += size;
@@ -316,19 +432,40 @@ pub fn scan_project(source_dir: &str, include_images: bool) -> ScanResult {
 
         if skip {
             result.skipped_files += 1;
+            if let Some(dir) = skip_dir {
+                let current = result.skippable.get(dir).copied().unwrap_or(0);
+                result.skippable.insert(dir.to_string(), current + size);
+            }
         } else {
             result.clean_files += 1;
             result.clean_size += size;
         }
+
+        if let Some(handle) = app_handle {
+            let current_file = item_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if scanned_files % 25 == 0 {
+                send_progress(Some(handle), "scanning", scanned_files, 0, &current_file, 0, 0, 0);
+            }
+        }
     }
 
+    if let Some(handle) = app_handle {
+        send_progress(Some(handle), "scanning", scanned_files, scanned_files, "", 100, 0, 0);
+    }
+
+    result.secret_matches.sort();
+    result.secret_matches.dedup();
+    result.secret_suggestions = secret_suggestions_from_matches(&result.secret_matches);
     result.total_lines = total_lines;
     result.secrets_count = secrets_count;
 
     result
 }
 
-/// Cleaning mode selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CleanMode {
     Flatten,
@@ -336,7 +473,6 @@ pub enum CleanMode {
     Scan,
 }
 
-/// Options passed to the cleaning operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanOptions {
     pub mode: CleanMode,
@@ -344,9 +480,9 @@ pub struct CleanOptions {
     pub include_videos: bool,
     pub include_documents: bool,
     pub create_readme: bool,
+    pub secret_replacements: Vec<SecretReplacement>,
 }
 
-/// Result returned after a cleaning operation completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanResult {
     pub success: bool,
@@ -384,11 +520,6 @@ fn send_progress(
     }
 }
 
-/// Copies clean files from `source_dir` to `output_dir`, skipping junk directories and files.
-///
-/// This is CPU/IO-bound (walkdir + rayon + fs) and contains no async work, so it is a
-/// synchronous function. Callers on an async runtime should run it via
-/// `tokio::task::spawn_blocking` to avoid blocking the runtime / UI thread.
 pub fn start_cleaning(
     source_dir: &str,
     output_dir: &str,
@@ -408,7 +539,7 @@ pub fn start_cleaning(
 
     send_progress(app_handle, "scanning", 0, 0, "", 0, 0, 0);
 
-    let scan_result = scan_project(source_dir, options.include_images);
+    let scan_result = scan_project_with_progress(source_dir, options.include_images, app_handle);
     let total_files = scan_result.clean_files;
 
     log::info!("Scanning complete: {} clean files out of {} total",
@@ -421,124 +552,67 @@ pub fn start_cleaning(
     let mut bytes_copied = 0u64;
     let mut deleted_items = Vec::new();
     let mut warnings = Vec::new();
-    let name_counter: Arc<Mutex<std::collections::HashMap<String, usize>>> = Arc::new(Mutex::new(std::collections::HashMap::new()));
-
-    let files: Vec<PathBuf> = WalkDir::new(source)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file())
-        .map(|e| e.path().to_path_buf())
-        .collect();
-
-    let results: Vec<(PathBuf, Result<u64, String>)> = files
-        .par_iter()
-        .filter_map(|item| {
-            let rel = item.strip_prefix(source).ok()?;
-            let parts: Vec<&str> = rel.iter()
-                .filter_map(|p| p.to_str())
-                .collect();
-
-            if first_skip_dir(&parts).is_some() {
-                return None;
-            }
-
-            if should_skip_file(item, options.include_images, options.include_videos, options.include_documents) {
-                return None;
-            }
-
-            Some((item.clone(), rel))
-        })
-        .map(|(item, rel)| {
-            let dest = match options.mode {
-                CleanMode::Flatten => {
-                    let name = item.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("file");
-
-                    let unique_name = {
-                        let mut map = name_counter.lock().expect("Failed to lock mutex");
-                        let count = map.entry(name.to_string()).or_insert(0);
-                        *count += 1;
-                        let current_count = *count;
-
-                        if current_count == 1 {
-                            name.to_string()
-                        } else {
-                            let stem = Path::new(name)
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("file");
-                            let ext = Path::new(name)
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .unwrap_or("");
-                            if ext.is_empty() {
-                                format!("{}__{}", stem, current_count - 1)
-                            } else {
-                                format!("{}__{}.{}", stem, current_count - 1, ext)
-                            }
-                        }
-                    };
-
-                    target.join(unique_name)
-                }
-                CleanMode::Clean | CleanMode::Scan => {
-                    target.join(rel)
-                }
-            };
-
-            if let Some(parent) = dest.parent() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    return (item.clone(), Err(format!("Failed to create directory: {}", e)));
-                }
-            }
-
-            match fs::copy(&item, &dest) {
-                Ok(size) => (item.clone(), Ok(size)),
-                Err(e) => (item.clone(), Err(format!("Failed to copy: {}", e))),
-            }
-        })
-        .collect();
-
+    let mut name_counter = std::collections::HashMap::<String, usize>::new();
     let mut last_emit = std::time::Instant::now();
 
-    for (original_path, result) in results {
-        match result {
-            Ok(size) => {
-                copied += 1;
-                bytes_copied += size;
+    let mut walker = WalkDir::new(source).follow_links(false).into_iter();
+    while let Some(entry) = walker.next() {
+        let entry = match entry { Ok(entry) => entry, Err(err) => { warnings.push(err.to_string()); continue; } };
+        let item = entry.path();
+        if entry.file_type().is_dir() {
+            if item != source && should_skip_dir(item.file_name().and_then(|n| n.to_str()).unwrap_or("")) {
+                walker.skip_current_dir();
+            }
+            continue;
+        }
+        if !entry.file_type().is_file() { continue; }
 
-                if last_emit.elapsed().as_millis() > 50 || copied == total_files {
-                    last_emit = std::time::Instant::now();
-                    let percentage = if total_files > 0 {
-                        ((copied as f64 / total_files as f64) * 100.0) as u8
-                    } else {
-                        100
-                    };
+        let rel = match item.strip_prefix(source) { Ok(rel) => rel, Err(_) => { skipped += 1; continue; } };
+        let parts: Vec<&str> = rel.iter().filter_map(|p| p.to_str()).collect();
+        if first_skip_dir(&parts).is_some() || should_skip_file(item, options.include_images, options.include_videos, options.include_documents) {
+            skipped += 1;
+            continue;
+        }
 
-                    let current_file = original_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    send_progress(
-                        app_handle,
-                        "copying",
-                        copied,
-                        total_files,
-                        &current_file,
-                        percentage,
-                        bytes_copied,
-                        0,
-                    );
+        let dest = match options.mode {
+            CleanMode::Flatten => {
+                let name = item.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                let count = name_counter.entry(name.to_string()).or_insert(0);
+                *count += 1;
+                if *count == 1 { target.join(name) } else {
+                    let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+                    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("");
+                    target.join(if ext.is_empty() { format!("{}__{}", stem, *count - 1) } else { format!("{}__{}.{}", stem, *count - 1, ext) })
                 }
             }
-            Err(e) => {
-                skipped += 1;
-                log::warn!("Skipped file {:?}: {}", original_path, e);
-            }
+            CleanMode::Clean | CleanMode::Scan => target.join(rel),
+        };
+
+        let copy_result = dest.parent().ok_or_else(|| "Destination has no parent directory".to_string())
+            .and_then(|parent| fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e)))
+            .and_then(|_| {
+                let mut bytes = 0u64;
+                if item.is_file() {
+                    let original = fs::read(item).map_err(|e| format!("Failed to read source file: {}", e))?;
+                    let content_str = String::from_utf8_lossy(&original).to_string();
+                    let updated_content = replace_secret_content(&content_str, &options.secret_replacements);
+                    if updated_content != content_str {
+                        fs::write(&dest, updated_content).map_err(|e| format!("Failed to write cleaned file: {}", e))?;
+                    } else {
+                        fs::copy(item, &dest).map_err(|e| format!("Failed to copy: {}", e))?;
+                    }
+                    bytes = original.len() as u64;
+                }
+                Ok(bytes)
+            });
+        match copy_result {
+            Ok(size) => { copied += 1; bytes_copied += size; }
+            Err(err) => { skipped += 1; warnings.push(format!("Skipped {}: {}", item.display(), err)); continue; }
+        }
+        if last_emit.elapsed().as_millis() > 50 || copied == total_files {
+            last_emit = std::time::Instant::now();
+            let percentage = if total_files > 0 { ((copied as f64 / total_files as f64) * 100.0) as u8 } else { 100 };
+            send_progress(app_handle, "copying", copied, total_files, item.file_name().and_then(|n| n.to_str()).unwrap_or(""), percentage, bytes_copied, 0);
         }
     }
 
@@ -586,6 +660,25 @@ pub fn start_cleaning(
         warnings.push("Warning: Git configuration detected. Consider removing .git folder if not needed.".to_string());
     }
 
+    if options.create_readme {
+        let readme_path = target.join("README.md");
+        if !readme_path.exists() {
+            let project_name = target.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Project");
+            let clean_name = project_name.trim_end_matches("_LidBridge");
+            let readme_content = format!(
+                "# {}\n\nThis project was cleaned and prepared for publishing using [LidBridge](https://github.com/lidprex/LidBridge).\n",
+                clean_name
+            );
+            if let Err(e) = fs::write(&readme_path, readme_content) {
+                warnings.push(format!("Failed to create README.md: {}", e));
+            } else {
+                copied += 1;
+            }
+        }
+    }
+
     send_progress(
         app_handle,
         "complete",
@@ -612,7 +705,6 @@ pub fn start_cleaning(
     })
 }
 
-/// Stub for future AI text analysis feature.
 pub async fn analyze_text_with_ai(_text: &str, _output_path: &Path) -> Result<(), String> {
     Err("AI analysis feature is not yet available".to_string())
 }
@@ -620,6 +712,23 @@ pub async fn analyze_text_with_ai(_text: &str, _output_path: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipped_directories_contribute_to_scan_size() {
+        let base_dir = std::env::temp_dir().join(format!("lidbridge-scan-skip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base_dir);
+        fs::create_dir_all(base_dir.join("node_modules")).unwrap();
+        fs::create_dir_all(base_dir.join("src")).unwrap();
+        fs::write(base_dir.join("node_modules").join("package.js"), "console.log('hello')").unwrap();
+        fs::write(base_dir.join("src").join("app.js"), "console.log('ok')").unwrap();
+
+        let result = scan_project(base_dir.to_str().unwrap(), false);
+
+        assert!(result.skipped_dirs > 0);
+        assert!(result.skippable.get("node_modules").copied().unwrap_or(0) > 0);
+
+        let _ = fs::remove_dir_all(base_dir);
+    }
 
     #[test]
     fn test_should_skip_dir() {
@@ -637,5 +746,12 @@ mod tests {
         let path = Path::new("test.png");
         assert!(should_skip_file(path, false, false, false));
         assert!(!should_skip_file(path, true, false, false));
+    }
+
+    #[test]
+    fn test_placeholder_suggestions_are_generated() {
+        assert_eq!(derive_placeholder_for_secret("GitHub Personal Access Token"), "your_github_token");
+        assert_eq!(derive_placeholder_for_secret("OpenAI API Key"), "your_api_key");
+        assert_eq!(derive_placeholder_for_secret("AWS Access Key"), "your_aws_access_key");
     }
 }
