@@ -1,6 +1,6 @@
 [package]
 name = "lidbridge"
-version = "1.0.0"
+version = "2.0.0"
 description = "Desktop app to clean local projects and push to GitHub"
 authors = ["Lidprex Labs"]
 edition = "2021"
@@ -41,6 +41,7 @@ rayon = "1.10"
 uuid = { version = "1", features = ["v4"] }
 jsonwebtoken = "9"
 regex = "1.10"
+tauri-plugin-notification = "2"
 
 [profile.release]
 strip = true
