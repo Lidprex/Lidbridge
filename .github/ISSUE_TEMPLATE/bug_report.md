@@ -1,38 +1,49 @@
 ---
-name: Bug report
-about: Create a report to help us improve
-title: ''
-labels: ''
+name: Bug Report
+about: Report a bug in LidBridge
+title: '[Bug] '
+labels: 'bug'
 assignees: ''
-
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## Bug Description
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
+A clear description of what went wrong.
+
+## Steps to Reproduce
+
+1. Open LidBridge
+2. Select project folder at '...'
+3. Click '...'
 4. See error
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## Expected Behavior
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+What you expected to happen.
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+## Actual Behavior
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+What actually happened.
 
-**Additional context**
-Add any other context about the problem here.
+## Screenshots / Logs
+
+If applicable, attach screenshots or paste relevant log output.
+
+<details>
+<summary>Log output (click to expand)</summary>
+
+```
+Paste logs here
+```
+
+</details>
+
+## Environment
+
+- **OS**: [e.g. Windows 11, macOS 14, Ubuntu 22.04]
+- **LidBridge Version**: [e.g. v2.0.0]
+- **Installation Method**: [e.g. GitHub Release, built from source]
+
+## Additional Context
+
+Any other information that might help diagnose the issue.
