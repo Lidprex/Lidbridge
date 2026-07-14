@@ -2,6 +2,12 @@
 // Copyright (C) 2026 Lidprex Labs <https://lidprex.onrender.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// =============================================================================
+// DEPRECATED — Central DB disabled as of v2.0.0
+// This module is kept for reference only. It is NOT called anywhere in the app.
+// It will be re-enabled in a future version with a proper backend/middleware.
+// Do NOT re-enable without routing through a secure backend.
+// =============================================================================
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
 
@@ -45,7 +51,6 @@ impl Database {
             [],
         ).map_err(|e| format!("Failed to create repo_history table: {}", e))?;
 
-        // Schema migrations — safe to re-run
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN github_id TEXT", []);
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN email TEXT", []);
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT", []);
