@@ -24,7 +24,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 git2 = { version = "0.19", features = ["vendored-libgit2"] }
 reqwest = { version = "0.12", features = ["json", "blocking"] }
 base64 = "0.22"
-sha2 = "0.10"
+sha2 = "0.11"
 aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"
