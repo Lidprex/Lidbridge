@@ -54,11 +54,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Create .env for build
-        run: |
-          cp .env.example .env
-        shell: bash
-
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
