@@ -39,7 +39,7 @@ dotenv = "0.15"
 walkdir = "2"
 rayon = "1.10"
 uuid = { version = "1", features = ["v4"] }
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 regex = "1.10"
 tauri-plugin-notification = "2"
 
