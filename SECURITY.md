@@ -6,7 +6,7 @@ If you discover a security vulnerability in LidBridge, please report it responsi
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email: [security@lidprex.onrender.com](mailto:security@lidprex.gmail.com)
+Instead, please email: [contact.lidprex@gmail.com](mailto:contact.lidprex@gmail.com)
 
 Include:
 - Description of the vulnerability
